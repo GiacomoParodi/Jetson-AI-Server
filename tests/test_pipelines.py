@@ -92,7 +92,7 @@ def test_depth_and_duplicate_ids(client, login):
     admin = login("admin")
     deep = node("L0", "det.pt")
     cur = deep
-    for i in range(1, 7):
+    for i in range(1, settings.pipeline_max_depth + 1):
         nxt = node(f"L{i}", "det.pt")
         cur["children"] = [nxt]
         cur = nxt

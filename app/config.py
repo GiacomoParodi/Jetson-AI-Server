@@ -47,6 +47,10 @@ class Settings:
         # YOLO: uso di TensorRT (auto = se disponibile)
         self.tensorrt = _env("JAS_TENSORRT", "auto").lower()  # auto | on | off
 
+        # Limiti delle pipeline YOLO (solo protezione da alberi enormi per errore)
+        self.pipeline_max_depth = int(_env("JAS_PIPELINE_MAX_DEPTH", "20"))
+        self.pipeline_max_nodes = int(_env("JAS_PIPELINE_MAX_NODES", "200"))
+
         # OCR (lingue Tesseract)
         self.ocr_languages = _env("JAS_OCR_LANG", "ita+eng")
 

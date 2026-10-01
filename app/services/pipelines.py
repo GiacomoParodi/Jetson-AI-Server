@@ -27,10 +27,8 @@ import uuid
 from typing import Any, Iterator
 
 from .. import db
+from ..config import settings
 from . import yolo_models
-
-MAX_DEPTH = 6
-MAX_NODES = 40
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pipelines (
@@ -74,10 +72,12 @@ def normalize(tree: Any) -> list[dict[str, Any]]:
         if not isinstance(node, dict):
             raise PipelineError("Nodo non valido")
         count += 1
-        if count > MAX_NODES:
-            raise PipelineError(f"Troppi nodi (massimo {MAX_NODES})")
-        if depth >= MAX_DEPTH:
-            raise PipelineError(f"Albero troppo profondo (massimo {MAX_DEPTH} livelli)")
+        if count > settings.pipeline_max_nodes:
+            raise PipelineError(f"Troppi nodi (massimo {settings.pipeline_max_nodes}, modificabile con "
+                                "JAS_PIPELINE_MAX_NODES nel file .env)")
+        if depth >= settings.pipeline_max_depth:
+            raise PipelineError(f"Albero troppo profondo (massimo {settings.pipeline_max_depth} livelli, "
+                                "modificabile con JAS_PIPELINE_MAX_DEPTH nel file .env)")
 
         name = str(node.get("name") or "").strip()[:60]
         if not name:
