@@ -6,6 +6,7 @@
   python -m app.cli add-model percorso/modello.pt [--name NOME.pt]
   python -m app.cli optimize NOME.pt        # ricompila con TensorRT per il Jetson
   python -m app.cli list-models
+  python -m app.cli set-llm NOME [--context 4096]   # LLM Ollama in uso
 """
 from __future__ import annotations
 
@@ -48,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     o = sub.add_parser("optimize", help="Ricompila subito un modello con TensorRT FP16")
     o.add_argument("name")
     sub.add_parser("list-models", help="Elenca i modelli e il loro stato")
+    s = sub.add_parser("set-llm", help="Imposta l'LLM Ollama in uso (già scaricato)")
+    s.add_argument("name")
+    s.add_argument("--context", type=int, default=None)
     args = parser.parse_args(argv)
 
     db.init()
@@ -71,6 +75,19 @@ def main(argv: list[str] | None = None) -> int:
         print(db.count_users())
     elif args.cmd in ("add-model", "optimize", "list-models"):
         return _models_cmd(args)
+    elif args.cmd == "set-llm":
+        from .services import ollama
+
+        installed = ollama.installed_models()
+        if installed is not None and not ollama.has_model(args.name, installed):
+            print(f"{args.name} non è scaricato in Ollama (ollama pull {args.name})", file=sys.stderr)
+            return 1
+        context = args.context or ollama.selected_context()
+        if context not in ollama.CONTEXT_CHOICES:
+            print(f"Contesto non valido: scegli tra {ollama.CONTEXT_CHOICES}", file=sys.stderr)
+            return 1
+        ollama.select(args.name, ollama.selected_embed(), context)
+        print(f"LLM in uso: {args.name} (contesto {context})")
     return 0
 
 

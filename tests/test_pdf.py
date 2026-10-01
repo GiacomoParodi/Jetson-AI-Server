@@ -131,3 +131,11 @@ def test_full_document_threshold_follows_context(monkeypatch):
     small = pdf_qa.full_doc_chars()
     monkeypatch.setattr(ollama, "selected_context", lambda: 8192)
     assert pdf_qa.full_doc_chars() == 2 * small
+
+
+def test_reasoning_is_removed_from_answer(tmp_path, monkeypatch):
+    pdf = tmp_path / "t.pdf"
+    make_pdf(pdf, ["Il canone è di 750 euro."])
+    monkeypatch.setattr(ollama, "chat", lambda m, **kw: "<think>\nCerco il canone…\n</think>\n750 euro (p. 1).")
+    result = pdf_qa.PdfQA().run(ctx_for(tmp_path, pdf, "Canone?"))
+    assert result["summary"] == "750 euro (p. 1)."

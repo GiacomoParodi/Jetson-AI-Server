@@ -28,7 +28,7 @@ bash deploy/install.sh
 Lo script:
 1. installa i pacchetti di sistema (ffmpeg, Tesseract OCR italiano/inglese, …);
 2. crea l'ambiente Python con **PyTorch per Jetson** (GPU) e le dipendenze;
-3. installa **Ollama** (senza scaricare modelli: li scegli tu dall'interfaccia);
+3. installa **Ollama**, scarica **Qwen3-4B-Instruct-2507** (Q4_K_M) e lo imposta come LLM in uso;
 4. chiede nome e password del primo **amministratore**;
 5. registra il servizio **systemd**, che parte a ogni accensione e si riavvia se si blocca;
 6. installa **Tailscale** e attiva l'accesso HTTPS.
@@ -81,6 +81,7 @@ Lo stesso script si può lanciare da terminale sul Jetson:
 .venv/bin/python -m app.cli add-model ~/Scaricati/scrivanie.pt   # aggiunge un modello
 .venv/bin/python -m app.cli optimize scrivanie.pt               # lo ricompila subito con TensorRT
 .venv/bin/python -m app.cli list-models                         # stato e velocità
+.venv/bin/python -m app.cli set-llm NOME_OLLAMA                  # LLM in uso
 ```
 
 Solo gli amministratori possono caricare modelli: un file `.pt` può contenere codice che viene
@@ -114,8 +115,10 @@ padre appartiene ogni risultato. Il lavoro usa la pipeline com'era al momento de
 
 ### Modelli linguistici (Ollama)
 
-Nessun modello YOLO o LLM viene scaricato o scelto in automatico. Nella pagina **Modelli**, sezione
-"Modelli linguistici", un amministratore:
+L'installazione scarica **Qwen3-4B-Instruct-2507** (quantizzato Q4_K_M) e lo imposta come LLM in
+uso; per cambiarlo, modifica l'elenco `LLM_CANDIDATES` in `deploy/install.sh` oppure usa la pagina
+Modelli. Nessun modello YOLO viene scaricato. Nella pagina **Modelli**, sezione "Modelli linguistici",
+un amministratore:
 
 1. scarica i modelli scrivendo il nome esatto dalla libreria di [ollama.com](https://ollama.com/library)
    (es. `famiglia:3b`), con la barra di avanzamento;

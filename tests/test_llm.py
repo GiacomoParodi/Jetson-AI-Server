@@ -45,3 +45,16 @@ def test_pdf_task_needs_a_chosen_model(client, login, monkeypatch):
     assert not ok and "Nessun modello LLM scelto" in reason
     monkeypatch.setattr(ollama, "selected_llm", lambda: "qwen2.5:3b")
     assert PdfQA().available() == (True, "")
+
+
+def test_cli_set_llm(client, monkeypatch, capsys):
+    from app import cli
+
+    name = "hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M"
+    monkeypatch.setattr(ollama, "installed_models", lambda: [])
+    assert cli.main(["set-llm", name]) == 1  # non scaricato
+    monkeypatch.setattr(ollama, "installed_models", lambda: [name])
+    assert cli.main(["set-llm", name, "--context", "8192"]) == 0
+    assert ollama.selected_llm() == name and ollama.selected_context() == 8192
+    assert cli.main(["set-llm", name, "--context", "123"]) == 1
+    ollama.select("", "", 4096)

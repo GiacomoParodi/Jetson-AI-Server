@@ -109,6 +109,8 @@ class PdfQA(Task):
 
         try:
             answer = ollama.chat(messages, on_token=on_token)
+            # Alcuni modelli (es. Qwen3 "thinking") scrivono il ragionamento tra <think>…</think>.
+            answer = re.sub(r"<think>.*?(</think>|$)", "", answer, flags=re.S)
         except ollama.OllamaError as e:
             raise TaskError(str(e)) from None
 

@@ -19,6 +19,14 @@ TORCH_WHEEL="https://github.com/ultralytics/assets/releases/download/v0.0.0/torc
 TORCHVISION_WHEEL="https://github.com/ultralytics/assets/releases/download/v0.0.0/torchvision-0.20.0a0+afc54f7-cp310-cp310-linux_aarch64.whl"
 
 
+# LLM da scaricare e impostare in uso (Qwen3-4B-Instruct-2507, quantizzato Q4_K_M).
+LLM_CANDIDATES=(
+  "qwen3:4b-instruct-2507-q4_K_M"
+  "qwen3:4b-instruct"
+  "hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M"
+  "hf.co/Qwen/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M"
+)
+
 step() { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m!! %s\033[0m\n' "$*"; }
 
@@ -99,8 +107,22 @@ if ! command -v ollama >/dev/null 2>&1; then
   curl -fsSL https://ollama.com/install.sh | sh
 fi
 sudo systemctl enable --now ollama || true
-# Nessun modello LLM viene scaricato in automatico: li scarichi e scegli tu
-# dalla pagina Modelli dell'interfaccia web.
+for i in $(seq 1 30); do curl -fs http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 1; done
+
+step "LLM scelto: Qwen3-4B-Instruct-2507"
+# Il modello è pubblicato con nomi diversi (libreria Ollama o GGUF su Hugging Face):
+# si prova in ordine e si usa il primo che si scarica. Altri modelli si aggiungono
+# e si scelgono dalla pagina Modelli.
+LLM_SCELTO=""
+for candidate in "${LLM_CANDIDATES[@]}"; do
+  echo "Provo: $candidate"
+  if ollama pull "$candidate"; then LLM_SCELTO="$candidate"; break; fi
+done
+if [[ -n "$LLM_SCELTO" ]]; then
+  "$PY" -m app.cli set-llm "$LLM_SCELTO"
+else
+  warn "Qwen3-4B-Instruct-2507 non scaricato: scaricalo dalla pagina Modelli (nome su ollama.com o hf.co/…)."
+fi
 
 step "Primo utente amministratore"
 if [[ "$("$PY" -m app.cli count-users)" == "0" ]]; then
