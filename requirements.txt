@@ -1,0 +1,21 @@
+# Server
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+httpx>=0.27
+psutil>=5.9
+
+# PDF e OCR
+pymupdf>=1.24.3
+pytesseract>=0.3.10
+pillow>=10.0
+
+# YOLO
+# Sul Jetson torch e torchvision vanno installati PRIMA, con le versioni per JetPack
+# (lo fa deploy/install.sh). Su un PC normale vengono installati da ultralytics.
+ultralytics>=8.3
+lap>=0.5.12
+numpy
+
+# Test
+pytest>=8.0
