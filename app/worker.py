@@ -112,3 +112,37 @@ class Worker:
 
 
 worker = Worker()
+
+
+def queue_optimization(model_name: str, user_id: int | None = None) -> str | None:
+    """Mette in coda l'ottimizzazione TensorRT di un modello (se non è già in coda)."""
+    for job in db.list_jobs(None, limit=200):
+        if (job["task"] == "optimize_model" and job["params"].get("model") == model_name
+                and job["status"] in ("queued", "uploading")):
+            return job["id"]
+    if user_id is None:
+        admin = next((u for u in db.list_users() if u["is_admin"]), None)
+        if admin is None:
+            log.warning("Nessun amministratore: impossibile ottimizzare %s", model_name)
+            return None
+        user_id = admin["id"]
+    job_id = db.create_job(user_id, "optimize_model", {"model": model_name}, None)
+    worker.notify()
+    return job_id
+
+
+def check_models_on_startup() -> None:
+    """Riprende le ottimizzazioni interrotte e rifà quelle diventate inutilizzabili
+    (es. dopo un aggiornamento di JetPack/TensorRT). Gira in un thread a parte
+    perché importare PyTorch richiede qualche secondo."""
+    from .services import yolo_models
+
+    try:
+        for m in yolo_models.list_models():
+            if yolo_models.read_meta(m["name"]).get("status") == yolo_models.OPTIMIZING:
+                yolo_models.update_meta(m["name"], status=yolo_models.PENDING)
+            if yolo_models.needs_optimization(m["name"]):
+                log.info("Modello %s da ottimizzare: messo in coda", m["name"])
+                queue_optimization(m["name"])
+    except Exception:
+        log.exception("Controllo dei modelli all'avvio non riuscito")

@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import shutil
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,9 +23,9 @@ from pydantic import BaseModel
 from . import __version__, db
 from .config import settings
 from .security import hash_password, hash_token, login_limiter, new_token, validate_new_password, verify_password
-from .services import ollama, system, yolo_models
+from .services import ollama, pipelines, system, yolo_models
 from .tasks import TaskError, registry
-from .worker import input_dir, job_dir, output_dir, worker
+from .worker import check_models_on_startup, input_dir, job_dir, output_dir, queue_optimization, worker
 
 log = logging.getLogger("app")
 STATIC_DIR = Path(__file__).parent / "static"
@@ -34,11 +35,13 @@ COOKIE = "jas_session"
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init()
+    pipelines.init()
     if not registry.tasks:
         registry.discover(settings.plugin_dirs)
     if db.count_users() == 0:
         log.warning("Nessun utente: crealo con  python -m app.cli create-user NOME --admin")
     worker.start()
+    threading.Thread(target=check_models_on_startup, name="model-check", daemon=True).start()
     yield
     worker.stop()
 
@@ -181,7 +184,7 @@ def delete_user(user_id: int, admin: dict = Depends(admin_user)):
 
 @app.get("/api/tasks")
 def list_tasks(_: dict = Depends(current_user)):
-    return [t.describe() for t in registry.all()]
+    return [t.describe() for t in registry.all() if not t.hidden]
 
 
 def _safe_filename(name: str) -> str:
@@ -229,7 +232,7 @@ async def create_job(
     user: dict = Depends(current_user),
 ):
     t = registry.get(task)
-    if not t:
+    if not t or t.hidden:
         raise HTTPException(404, "Compito sconosciuto")
     ok, reason = t.available()
     if not ok:
@@ -292,8 +295,8 @@ def rerun_job(job_id: str, body: RerunIn, user: dict = Depends(current_user)):
     """Nuovo lavoro sullo stesso file con parametri diversi (es. un'altra domanda sul PDF)."""
     old = _job_for(job_id, user)
     t = registry.get(old["task"])
-    if not t:
-        raise HTTPException(404, "Compito non più disponibile")
+    if not t or t.hidden:
+        raise HTTPException(404 if not t else 400, "Questo lavoro non si può rieseguire")
     try:
         clean = t.validate_params({**old["params"], **body.params})
     except TaskError as e:
@@ -352,30 +355,109 @@ def list_models(_: dict = Depends(current_user)):
 
 
 @app.post("/api/models")
-async def upload_model(file: UploadFile = File(...), _: dict = Depends(admin_user)):
+async def upload_model(
+    file: UploadFile = File(...),
+    replace: str | None = Form(None),
+    admin: dict = Depends(admin_user),
+):
+    """Carica un modello .pt (o ne sostituisce uno esistente con `replace`) e ne
+    mette in coda l'ottimizzazione per il Jetson."""
     # Solo gli admin: un file .pt può eseguire codice quando viene aperto.
-    name = yolo_models.safe_model_name(file.filename or "")
-    if not name:
-        raise HTTPException(400, "Serve un file .pt con un nome semplice (lettere, numeri, _ . -)")
-    dest = settings.models_dir / name
+    if replace:
+        if not yolo_models.exists(replace):
+            raise HTTPException(404, "Modello da sostituire non trovato")
+        if not (file.filename or "").lower().endswith(".pt"):
+            raise HTTPException(400, "Serve un file .pt")
+        name = replace
+    else:
+        name = yolo_models.safe_model_name(file.filename or "")
+        if not name:
+            raise HTTPException(400, "Serve un file .pt con un nome semplice (lettere, numeri, _ . -)")
+    old_classes = (yolo_models.get_model(name) or {}).get("classes")
     tmp = settings.models_dir / f".upload-{name}"
     await _save_upload(file, tmp)
     try:
-        await run_in_threadpool(yolo_models.inspect_model, tmp)
+        model = await run_in_threadpool(yolo_models.install_model, tmp, name)
     except Exception as e:
         tmp.unlink(missing_ok=True)
-        tmp.with_suffix(".json").unlink(missing_ok=True)
         raise HTTPException(400, f"Il file non è un modello YOLO valido: {e}") from None
-    yolo_models.delete_model(name)  # sostituisce l'eventuale versione precedente (e il suo .engine)
-    tmp.replace(dest)
-    tmp.with_suffix(".json").replace(dest.with_suffix(".json"))
-    return next(m for m in yolo_models.list_models() if m["name"] == name)
+    queue_optimization(name, admin["id"])
+    warnings = []
+    if old_classes is not None and old_classes != model["classes"]:
+        used = pipelines.using_model(name)
+        if used:
+            warnings.append("Le classi del modello sono cambiate: controlla le pipeline che lo usano ("
+                            + ", ".join(used) + ").")
+    return {**model, "warnings": warnings}
+
+
+@app.post("/api/models/{name}/optimize")
+def optimize_model(name: str, admin: dict = Depends(admin_user)):
+    if not yolo_models.exists(name):
+        raise HTTPException(404, "Modello non trovato")
+    yolo_models.update_meta(name, status=yolo_models.PENDING, error=None)
+    return {"job_id": queue_optimization(name, admin["id"])}
 
 
 @app.delete("/api/models/{name}")
 def delete_model(name: str, _: dict = Depends(admin_user)):
-    if not yolo_models.safe_model_name(name) or not yolo_models.delete_model(name):
+    if not yolo_models.exists(name):
         raise HTTPException(404, "Modello non trovato")
+    used = pipelines.using_model(name)
+    if used:
+        raise HTTPException(400, f"Il modello è usato dalle pipeline: {', '.join(used)}. Toglilo prima dai nodi.")
+    yolo_models.delete_model(name)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- pipeline YOLO
+
+class PipelineIn(BaseModel):
+    name: str
+    description: str = ""
+    tree: list[dict[str, Any]] = []
+    version: int | None = None
+
+
+@app.get("/api/pipelines")
+def list_pipelines(_: dict = Depends(current_user)):
+    return pipelines.list_all()
+
+
+@app.get("/api/pipelines/{pipeline_id}")
+def get_pipeline(pipeline_id: int, _: dict = Depends(current_user)):
+    p = pipelines.get(pipeline_id)
+    if not p:
+        raise HTTPException(404, "Pipeline non trovata")
+    return p
+
+
+@app.post("/api/pipelines")
+def create_pipeline(body: PipelineIn, admin: dict = Depends(admin_user)):
+    try:
+        return pipelines.create(body.name, body.description, body.tree, admin["id"])
+    except pipelines.PipelineError as e:
+        raise HTTPException(400, str(e)) from None
+
+
+@app.put("/api/pipelines/{pipeline_id}")
+def update_pipeline(pipeline_id: int, body: PipelineIn, _: dict = Depends(admin_user)):
+    if body.version is None:
+        raise HTTPException(400, "Versione mancante")
+    try:
+        return pipelines.update(pipeline_id, body.name, body.description, body.tree, body.version)
+    except pipelines.PipelineError as e:
+        raise HTTPException(400, str(e)) from None
+    except pipelines.VersionConflict:
+        raise HTTPException(409, "Qualcun altro ha modificato questa pipeline nel frattempo: ricarica la pagina") from None
+    except KeyError:
+        raise HTTPException(404, "Pipeline non trovata") from None
+
+
+@app.delete("/api/pipelines/{pipeline_id}")
+def delete_pipeline(pipeline_id: int, _: dict = Depends(admin_user)):
+    if not pipelines.delete(pipeline_id):
+        raise HTTPException(404, "Pipeline non trovata")
     return {"ok": True}
 
 
@@ -392,6 +474,7 @@ def system_status(_: dict = Depends(current_user)):
         "ollama": {"running": models is not None, "models": models or [],
                    "llm_model": settings.llm_model, "embed_model": settings.embed_model},
         "cuda": yolo_models.cuda_available(),
+        "tensorrt": yolo_models.tensorrt_version() if yolo_models.tensorrt_enabled() else None,
     }
 
 

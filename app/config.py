@@ -44,8 +44,7 @@ class Settings:
         self.llm_context = int(_env("JAS_LLM_CONTEXT", "8192"))
         self.ollama_keep_alive = _env("JAS_OLLAMA_KEEP_ALIVE", "5m")
 
-        # YOLO
-        self.yolo_default_model = _env("JAS_YOLO_DEFAULT_MODEL", "yolo11n.pt")
+        # YOLO: uso di TensorRT (auto = se disponibile)
         self.tensorrt = _env("JAS_TENSORRT", "auto").lower()  # auto | on | off
 
         # OCR (lingue Tesseract)

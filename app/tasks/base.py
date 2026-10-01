@@ -24,7 +24,8 @@ class JobCancelled(Exception):
 class Param:
     """Un parametro del compito. L'interfaccia web genera il modulo da questi campi.
 
-    type: text | textarea | number | bool | select | yolo_model
+    type: text | textarea | number | bool | select
+    choices: elenco di valori, oppure di {"value": ..., "label": ...}
     """
 
     name: str
@@ -33,7 +34,7 @@ class Param:
     default: Any = None
     required: bool = False
     help: str = ""
-    choices: list[str] | None = None
+    choices: list[Any] | None = None
     min: float | None = None
     max: float | None = None
     step: float | None = None
@@ -61,9 +62,10 @@ class Param:
             if isinstance(value, bool):
                 return value
             return str(value).lower() in ("1", "true", "on", "yes", "si", "sì")
-        if self.type in ("select", "yolo_model"):
+        if self.type == "select":
             value = str(value)
-            if self.choices is not None and value not in self.choices:
+            allowed = [str(c["value"]) if isinstance(c, dict) else str(c) for c in self.choices or []]
+            if self.choices is not None and value not in allowed:
                 raise TaskError(f"Valore non valido per '{self.label}': {value}")
             return value
         return str(value)
@@ -107,13 +109,15 @@ class Task:
     params: list[Param] = []
     # Testo del pulsante per rieseguire sullo stesso file con altri parametri.
     rerun_label: str = "Riesegui con altri parametri"
+    # Compito interno: non compare nell'elenco "Nuovo lavoro" e non si avvia da lì.
+    hidden: bool = False
 
     def available(self) -> tuple[bool, str]:
         """(True, "") se il compito può girare; altrimenti (False, motivo)."""
         return True, ""
 
-    def param_choices(self, param: Param) -> list[str] | None:
-        """Scelte dinamiche per un parametro (es. elenco dei modelli YOLO)."""
+    def param_choices(self, param: Param) -> list[Any] | None:
+        """Scelte dinamiche per un parametro (es. elenco delle pipeline)."""
         return param.choices
 
     def describe(self) -> dict[str, Any]:
@@ -131,11 +135,14 @@ class Task:
             "needs_file": self.needs_file,
             "params": params,
             "rerun_label": self.rerun_label,
+            "hidden": self.hidden,
             "available": ok,
             "unavailable_reason": reason,
         }
 
     def validate_params(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """Valida i parametri. Le sottoclassi possono aggiungere chiavi che iniziano
+        con '_' (dati interni, es. una copia della pipeline usata)."""
         out = {}
         for p in self.params:
             choices = self.param_choices(p)

@@ -95,9 +95,14 @@ step "Configurazione"
 [[ -f "$DIR/.env" ]] || cp "$DIR/.env.example" "$DIR/.env"
 mkdir -p "$DIR/data/models/yolo" "$DIR/plugins"
 
-step "Modello YOLO predefinito"
-(cd "$DIR/data/models" && "$PY" -c "from ultralytics import YOLO; YOLO('yolo11n.pt')") \
-  || warn "Download di yolo11n.pt non riuscito: verrà riprovato al primo utilizzo."
+step "Modello YOLO di esempio"
+if [[ ! -f "$DIR/data/models/yolo/yolo11n.pt" ]]; then
+  if (cd "$DIR/data/models" && "$PY" -c "from ultralytics import YOLO; YOLO('yolo11n.pt')"); then
+    "$PY" -m app.cli add-model "$DIR/data/models/yolo11n.pt"
+  else
+    warn "Download di yolo11n.pt non riuscito: potrai caricare i tuoi modelli dalla pagina Modelli."
+  fi
+fi
 
 step "Ollama (LLM locale)"
 if ! command -v ollama >/dev/null 2>&1; then
@@ -147,3 +152,6 @@ echo "Dalla stessa rete locale:   http://$(hostname -I | awk '{print $1}'):${POR
 echo
 echo "Sui dispositivi esterni installa l'app Tailscale e accedi con lo stesso account."
 echo "Log del server:  journalctl -u jetson-ai-server -f"
+echo
+echo "I modelli caricati vengono ottimizzati con TensorRT in automatico (qualche minuto ciascuno)."
+echo "Per le massime prestazioni: sudo nvpmodel -m 0 && sudo jetson_clocks"
