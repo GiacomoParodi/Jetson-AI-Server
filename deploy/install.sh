@@ -18,10 +18,6 @@ PIP="$VENV/bin/pip"
 TORCH_WHEEL="https://github.com/ultralytics/assets/releases/download/v0.0.0/torch-2.5.0a0+872d972e41.nv24.08-cp310-cp310-linux_aarch64.whl"
 TORCHVISION_WHEEL="https://github.com/ultralytics/assets/releases/download/v0.0.0/torchvision-0.20.0a0+afc54f7-cp310-cp310-linux_aarch64.whl"
 
-LLM_MODEL="$(grep -E '^JAS_LLM_MODEL=' "$DIR/.env" 2>/dev/null | cut -d= -f2 || true)"
-LLM_MODEL="${LLM_MODEL:-qwen2.5:3b}"
-EMBED_MODEL="$(grep -E '^JAS_EMBED_MODEL=' "$DIR/.env" 2>/dev/null | cut -d= -f2 || true)"
-EMBED_MODEL="${EMBED_MODEL:-nomic-embed-text}"
 
 step() { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m!! %s\033[0m\n' "$*"; }
@@ -95,23 +91,16 @@ step "Configurazione"
 [[ -f "$DIR/.env" ]] || cp "$DIR/.env.example" "$DIR/.env"
 mkdir -p "$DIR/data/models/yolo" "$DIR/plugins"
 
-step "Modello YOLO di esempio"
-if [[ ! -f "$DIR/data/models/yolo/yolo11n.pt" ]]; then
-  if (cd "$DIR/data/models" && "$PY" -c "from ultralytics import YOLO; YOLO('yolo11n.pt')"); then
-    "$PY" -m app.cli add-model "$DIR/data/models/yolo11n.pt"
-  else
-    warn "Download di yolo11n.pt non riuscito: potrai caricare i tuoi modelli dalla pagina Modelli."
-  fi
-fi
+# Nessun modello YOLO viene scaricato o aggiunto in automatico: li carichi tu
+# dalla pagina Modelli (o con: .venv/bin/python -m app.cli add-model file.pt).
 
-step "Ollama (LLM locale)"
+step "Ollama (motore per gli LLM locali)"
 if ! command -v ollama >/dev/null 2>&1; then
   curl -fsSL https://ollama.com/install.sh | sh
 fi
 sudo systemctl enable --now ollama || true
-for i in $(seq 1 30); do curl -fs http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 1; done
-ollama pull "$LLM_MODEL"
-ollama pull "$EMBED_MODEL"
+# Nessun modello LLM viene scaricato in automatico: li scarichi e scegli tu
+# dalla pagina Modelli dell'interfaccia web.
 
 step "Primo utente amministratore"
 if [[ "$("$PY" -m app.cli count-users)" == "0" ]]; then

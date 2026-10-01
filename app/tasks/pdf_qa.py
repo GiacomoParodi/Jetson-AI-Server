@@ -22,8 +22,13 @@ from .base import JobContext, Param, Task, TaskError
 CHUNK_CHARS = 1000
 CHUNK_OVERLAP = 200
 TOP_K = 6
-# Sotto questa soglia l'intero documento entra nel contesto dell'LLM.
-FULL_DOC_CHARS = 12000
+# Margine per domanda e risposta: il documento intero va all'LLM solo se occupa
+# al massimo ~60% del contesto (circa 2,5 caratteri per token in italiano, stima prudente).
+
+
+def full_doc_chars() -> int:
+    """Sotto questa soglia (in caratteri) l'intero documento entra nel contesto dell'LLM."""
+    return int(ollama.selected_context() * 1.5)
 MIN_TEXT_FOR_NO_OCR = 50
 
 SYSTEM_PROMPT = (
@@ -59,8 +64,11 @@ class PdfQA(Task):
         models = ollama.installed_models()
         if models is None:
             return False, "Ollama non è in esecuzione"
-        if not ollama.has_model(settings.llm_model, models):
-            return False, f"Modello LLM '{settings.llm_model}' non scaricato (ollama pull {settings.llm_model})"
+        llm = ollama.selected_llm()
+        if not llm:
+            return False, "Nessun modello LLM scelto: un amministratore deve sceglierlo nella pagina Modelli"
+        if not ollama.has_model(llm, models):
+            return False, f"Il modello LLM scelto ({llm}) non è scaricato: scaricalo dalla pagina Modelli"
         return True, ""
 
     def run(self, ctx: JobContext) -> dict[str, Any]:
@@ -77,7 +85,7 @@ class PdfQA(Task):
         ctx.check_cancelled()
         ctx.progress(0.7, "Ricerca delle parti pertinenti…", force=True)
         total_chars = sum(len(c["text"]) for c in chunks)
-        full_doc = total_chars <= FULL_DOC_CHARS
+        full_doc = total_chars <= full_doc_chars()
         if full_doc:
             selected = chunks
             notes.append("Documento breve: il modello lo ha letto per intero.")
@@ -109,7 +117,7 @@ class PdfQA(Task):
             "sources": [] if full_doc else [{"label": f"Pagina {c['page']}", "text": c["text"]} for c in selected],
             "outputs": [{"file": "testo_estratto.txt", "kind": "file", "label": "Testo estratto dal PDF"}],
             "notes": notes,
-            "meta": {"pages": index["pages"], "ocr_pages": index["ocr_pages"], "model": settings.llm_model},
+            "meta": {"pages": index["pages"], "ocr_pages": index["ocr_pages"], "model": ollama.selected_llm()},
         }
 
 
@@ -200,7 +208,9 @@ def _doc_prefix(model: str) -> tuple[str, str]:
 
 def load_or_build_index(ctx: JobContext, pdf: Path, ocr_mode: str, notes: list[str]) -> dict[str, Any]:
     """Indice del documento, salvato in cache: la seconda domanda sullo stesso PDF è immediata."""
-    key = f"{_file_hash(pdf)}-{ocr_mode}"
+    # Anche il modello di embedding fa parte della chiave: se lo cambi, l'indice si rifà.
+    embed_key = re.sub(r"[^A-Za-z0-9._-]", "_", ollama.selected_embed() or "nessuno")
+    key = f"{_file_hash(pdf)}-{ocr_mode}-{embed_key}"
     cache = ctx.cache_dir / "pdf" / key
     meta_path = cache / "index.json"
     text_path = cache / "testo.txt"
@@ -219,16 +229,20 @@ def load_or_build_index(ctx: JobContext, pdf: Path, ocr_mode: str, notes: list[s
             "\n\n".join(f"===== Pagina {i} =====\n{t.strip()}" for i, t in enumerate(pages, start=1)),
             encoding="utf-8",
         )
-        if chunks and sum(len(c["text"]) for c in chunks) > FULL_DOC_CHARS:
+        embed_model = ollama.selected_embed()
+        if chunks and sum(len(c["text"]) for c in chunks) > full_doc_chars() and not embed_model:
+            build_notes.append("Nessun modello di embedding scelto: ricerca solo per parole chiave.")
+        elif chunks and sum(len(c["text"]) for c in chunks) > full_doc_chars():
             ctx.progress(0.62, "Indicizzazione del documento…", force=True)
             try:
                 import numpy as np
 
-                doc_prefix, _ = _doc_prefix(settings.embed_model)
-                vectors = np.array(ollama.embed([doc_prefix + c["text"] for c in chunks]), dtype=np.float32)
+                doc_prefix, _ = _doc_prefix(embed_model)
+                vectors = np.array(ollama.embed([doc_prefix + c["text"] for c in chunks], model=embed_model),
+                                   dtype=np.float32)
                 vectors /= np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-9
                 np.save(cache / "embeddings.npy", vectors)
-                index["embed_model"] = settings.embed_model
+                index["embed_model"] = embed_model
             except Exception as e:
                 build_notes.append(
                     f"Ricerca semantica non disponibile ({e}); uso la ricerca per parole chiave."

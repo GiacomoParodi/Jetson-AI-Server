@@ -278,7 +278,9 @@ function paramFields(params, values) {
       return h("div", { class: "field" }, h("label", { class: "check" }, input, p.label),
         p.help ? h("div", { class: "help" }, p.help) : null);
     } else if (p.choices) {
-      input = h("select", { name: p.name },
+      // Scelta obbligatoria senza valore: nessuna opzione preimpostata.
+      input = h("select", { name: p.name, required: p.required },
+        p.required && (value === null || value === undefined) ? h("option", { value: "", selected: true, disabled: true }, "— scegli —") : null,
         p.choices.map((c) => {
           const v = typeof c === "object" ? c.value : c;
           return h("option", { value: v, selected: String(v) === String(value) }, typeof c === "object" ? c.label : c);
@@ -543,7 +545,8 @@ const TASK_LABEL = { detect: "Detection", segment: "Segmentazione", classify: "C
 // Stessi colori dei riquadri disegnati nei video (app/tasks/yolo_pipeline.py, convertiti da BGR).
 const NODE_COLORS = ["#ff9f1a", "#2e86ff", "#3cb44b", "#e040fb", "#00c8c8", "#ff4d4d", "#9c6bff", "#c8d400", "#ff7fbf", "#8d6e63"];
 
-function modelStatus(m) {
+function modelStatus(m, chosen = true) {
+  if (!chosen) return h("span", { class: "badge failed" }, "scegli un modello");
   if (!m) return h("span", { class: "badge failed" }, "modello mancante");
   if (m.status === "ready" && m.backend === "tensorrt") return h("span", { class: "badge done", title: m.speed ? `${m.speed.after_ms} ms per immagine` : "" }, "⚡ TensorRT");
   if (m.status === "ready") return h("span", { class: "badge cancelled", title: m.note || "" }, "PyTorch");
@@ -581,15 +584,19 @@ function pickAndUploadModel(replace) {
 async function viewModels() {
   setNav("models");
   const list = h("div", { class: "card" }, h("p", { class: "muted", style: "margin:0" }, "Caricamento…"));
+  const llmCard = h("div", { class: "card", style: "margin-top:28px" });
   setKids($main, 
-    h("div", { class: "row spread" }, h("h1", {}, "Modelli YOLO"),
+    h("div", { class: "row spread" }, h("h1", {}, "Modelli"),
       me.is_admin ? h("button", { class: "primary", onclick: async () => {
         try { if (await pickAndUploadModel()) loadList(); } catch (e) { toast(e.message); }
-      } }, "+ Carica modello (.pt)") : null),
+      } }, "+ Carica modello YOLO (.pt)") : null),
+    h("h2", {}, "Modelli YOLO"),
     h("p", { class: "muted" }, "Modelli di detection, segmentazione o classificazione addestrati con Ultralytics. "
       + "Dopo il caricamento ogni modello viene ricompilato automaticamente con TensorRT FP16 per la GPU del Jetson "
       + "(qualche minuto, una volta sola): lo stato e il guadagno di velocità compaiono qui."),
-    list);
+    list,
+    llmCard);
+  renderLlmSection(llmCard);
 
   let timer = null;
   async function loadList() {
@@ -627,6 +634,122 @@ async function viewModels() {
     }
   }
   loadList();
+}
+
+// ------------------------------------------------------------------ modelli LLM (Ollama)
+
+const CONTEXT_LABEL = { 2048: "2048 (più veloce)", 4096: "4096 (consigliato)", 8192: "8192 (documenti lunghi)", 16384: "16384 (lento, molta memoria)" };
+
+/** Avvisi se un modello non rispetta i parametri consigliati per il Jetson Orin Nano. */
+function llmWarnings(m) {
+  const w = [];
+  const q = (m.quantization || "").toUpperCase();
+  // Gli embedding sono piccoli e su Ollama sono quasi sempre F16: l'avviso vale solo per gli LLM.
+  if (!m.embedding && q && /^(F16|F32|BF16)$/.test(q)) w.push("non quantizzato: lento e pesante");
+  if (!m.embedding && m.size_gb > 3.5) w.push("grande per il Jetson: lento, poca memoria per YOLO");
+  if (m.embedding && m.size_gb > 1.3) w.push("embedding pesante");
+  return w;
+}
+
+function llmGuide() {
+  return h("details", { class: "guide" }, h("summary", {}, "Quali modelli scegliere per il Jetson Orin Nano (8 GB)"),
+    h("h3", {}, "LLM (risponde alle domande)"),
+    h("ul", {},
+      h("li", {}, h("b", {}, "Dimensione: "), "1–4 miliardi di parametri (tag ", h("code", {}, ":1.5b"), ", ", h("code", {}, ":3b"), ", ", h("code", {}, ":4b"),
+        "). I modelli da 7–8 miliardi girano, ma sono molto più lenti e lasciano poca memoria a YOLO."),
+      h("li", {}, h("b", {}, "Quantizzazione: "), h("code", {}, "Q4_K_M"), " (è quella dei tag normali di Ollama). Evita le varianti ",
+        h("code", {}, "fp16"), " e ", h("code", {}, "q8"), ": occupano 2–4 volte la memoria e sono più lente."),
+      h("li", {}, h("b", {}, "Peso del file: "), "sotto i ~3 GB."),
+      h("li", {}, h("b", {}, "Contesto: "), "4096 va bene quasi sempre; 8192 se vuoi che documenti più lunghi vengano letti per intero (più memoria e più lento); 2048 è il più veloce."),
+      h("li", {}, h("b", {}, "Lingua: "), "per l'italiano funzionano bene le famiglie Qwen, Gemma e Llama recenti.")),
+    h("h3", {}, "Embedding (trova le pagine giuste nei PDF lunghi, facoltativo)"),
+    h("ul", {},
+      h("li", {}, "Modelli piccoli (sotto ~600 milioni di parametri, file sotto ~1,2 GB)."),
+      h("li", {}, "Per documenti in italiano scegli un modello ", h("b", {}, "multilingue"), "; molti modelli di embedding sono addestrati soprattutto sull'inglese."),
+      h("li", {}, "Senza embedding la ricerca nel PDF usa solo le parole chiave: funziona, ma capisce meno i sinonimi.")),
+    h("p", { class: "small muted" }, "Per scaricare un modello scrivi il nome esatto dalla libreria su ollama.com (es. ",
+      h("code", {}, "famiglia:3b"), "). Dopo il download, sceglilo qui sopra e premi Salva. ",
+      "Puoi provare più modelli e tenere quello che ti dà il miglior compromesso tra velocità e qualità sui tuoi documenti."));
+}
+
+async function renderLlmSection(card) {
+  let timer = null;
+  async function load() {
+    clearTimeout(timer);
+    let s;
+    try { s = await api("/api/llm"); } catch (e) { return setKids(card, errorBox(e.message)); }
+    const pulls = Object.entries(s.pulls || {});
+    const llms = s.installed.filter((m) => !m.embedding);
+    const embeds = s.installed.filter((m) => m.embedding);
+    const opt = (m, selected) => h("option", { value: m.name, selected: m.name === selected },
+      `${m.name}${m.parameter_size ? ` · ${m.parameter_size}` : ""}${m.quantization ? ` · ${m.quantization}` : ""}`);
+    const dis = !me.is_admin;
+
+    const llmSel = h("select", { disabled: dis },
+      h("option", { value: "", selected: !s.llm_model }, "— nessuno —"),
+      llms.length ? h("optgroup", { label: "Modelli linguistici" }, llms.map((m) => opt(m, s.llm_model))) : null,
+      embeds.length ? h("optgroup", { label: "Altri" }, embeds.map((m) => opt(m, s.llm_model))) : null);
+    const embSel = h("select", { disabled: dis },
+      h("option", { value: "", selected: !s.embed_model }, "Nessuno (solo parole chiave)"),
+      embeds.length ? h("optgroup", { label: "Modelli di embedding" }, embeds.map((m) => opt(m, s.embed_model))) : null,
+      llms.length ? h("optgroup", { label: "Altri" }, llms.map((m) => opt(m, s.embed_model))) : null);
+    const ctxSel = h("select", { disabled: dis }, s.context_choices.map((c) => h("option", { value: c, selected: c === s.context }, CONTEXT_LABEL[c] || c)));
+    const msg = h("div");
+
+    const pullName = h("input", { type: "text", placeholder: "nome:tag dalla libreria Ollama", autocomplete: "off" });
+
+    setKids(card,
+      h("h2", {}, "Modelli linguistici (Ollama)"),
+      h("p", { class: "muted small" }, "Usati dal compito “Domande su un documento PDF”. Li scarichi e li scegli tu."),
+      !s.running ? h("div", { class: "alert warn" }, "Ollama non è in esecuzione: avvialo sul Jetson con  sudo systemctl start ollama") : null,
+      s.running && !s.llm_model ? h("div", { class: "alert info small" }, "Nessun LLM scelto: le domande sui PDF sono disattivate finché non ne scegli uno.") : null,
+      h("div", { class: "llm-form" },
+        h("div", { class: "field" }, h("label", {}, "LLM in uso"), llmSel),
+        h("div", { class: "field" }, h("label", {}, "Embedding in uso"), embSel),
+        h("div", { class: "field" }, h("label", {}, "Contesto (token)"), ctxSel)),
+      msg,
+      me.is_admin ? h("button", { class: "primary", onclick: async () => {
+        try {
+          await api("/api/llm/select", { json: { llm_model: llmSel.value, embed_model: embSel.value, context: Number(ctxSel.value) } });
+          toast("Scelta salvata");
+          load();
+        } catch (e) { setKids(msg, errorBox(e.message)); }
+      } }, "Salva scelta") : null,
+
+      h("h3", { style: "margin-top:20px" }, "Scaricati sul Jetson"),
+      s.installed.length ? h("div", { class: "table-wrap" }, h("table", {},
+        h("thead", {}, h("tr", {}, h("th", {}, "Modello"), h("th", {}, "Parametri"), h("th", {}, "Quantizzazione"), h("th", { class: "num" }, "Peso"), h("th", {}))),
+        h("tbody", {}, s.installed.map((m) => {
+          const inUse = m.name === s.llm_model ? "LLM in uso" : m.name === s.embed_model ? "embedding in uso" : null;
+          const warns = llmWarnings(m);
+          return h("tr", {},
+            h("td", {}, h("b", {}, m.name), " ", m.embedding ? h("span", { class: "badge cancelled" }, "embedding") : null,
+              inUse ? h("span", { class: "badge done", style: "margin-left:6px" }, inUse) : null,
+              warns.map((w) => h("div", { class: "small", style: "color:var(--warn)" }, `⚠ ${w}`))),
+            h("td", {}, m.parameter_size || "—"),
+            h("td", {}, m.quantization || "—"),
+            h("td", { class: "num" }, `${m.size_gb} GB`),
+            h("td", { style: "text-align:right" }, me.is_admin && !inUse ? h("button", { class: "link", style: "color:var(--danger)", onclick: async () => {
+              if (!confirm(`Eliminare ${m.name} dal Jetson?`)) return;
+              try { await api(`/api/llm/models/${encodeURIComponent(m.name)}`, { method: "DELETE" }); load(); } catch (e) { alert(e.message); }
+            } }, "Elimina") : null));
+        })))) : h("p", { class: "muted small" }, s.running ? "Nessun modello scaricato." : "—"),
+
+      me.is_admin && s.running ? h("form", { class: "row", style: "margin-top:12px", onsubmit: async (e) => {
+        e.preventDefault();
+        if (!pullName.value.trim()) return;
+        try { await api("/api/llm/pull", { json: { name: pullName.value.trim() } }); pullName.value = ""; load(); } catch (ex) { alert(ex.message); }
+      } }, h("div", { style: "flex:1;min-width:200px" }, pullName), h("button", { type: "submit" }, "Scarica modello")) : null,
+      pulls.map(([name, p]) => h("div", { class: "pull" },
+        h("div", { class: "row spread small" }, h("b", {}, name),
+          h("span", { class: p.error ? "" : "muted", style: p.error ? "color:var(--danger)" : "" },
+            p.error ? `Errore: ${p.error}` : p.total ? `${p.status} · ${(p.completed / 1e9).toFixed(2)} / ${(p.total / 1e9).toFixed(2)} GB` : p.status)),
+        !p.error && !p.finished_at ? progressBar(p.total ? p.completed / p.total : 0) : null)),
+      llmGuide());
+
+    if (pulls.some(([, p]) => !p.finished_at) && location.hash === "#/models") timer = setTimeout(load, 1500);
+  }
+  load();
 }
 
 // ------------------------------------------------------------------ pipeline
@@ -740,6 +863,13 @@ async function viewPipeline(id) {
 
   async function save() {
     setKids(msg);
+    // Prima di salvare porta l'utente sul primo nodo senza modello.
+    const missing = (function find(ns) { for (const x of ns) { if (!x.model) return x; const c = find(x.children || []); if (c) return c; } return null; })(state.tree);
+    if (missing) {
+      select(missing.id);
+      setKids(msg, errorBox(`Scegli il modello del nodo «${missing.name}» prima di salvare.`));
+      return;
+    }
     saveBtn.disabled = true;
     try {
       const r = await api(`/api/pipelines/${id}`, { method: "PUT", json: { name: state.name, description: state.description, tree: state.tree, version: state.version } });
@@ -758,8 +888,8 @@ async function viewPipeline(id) {
 
   // ---- operazioni sui nodi
   function defaultNode(parent) {
-    const first = models[0];
-    return { id: newNodeId(), name: parent ? "Nuovo figlio" : "Nuovo nodo", model: first ? first.name : "", conf: 0.35,
+    // Nessun modello preimpostato: lo sceglie l'utente.
+    return { id: newNodeId(), name: parent ? "Nuovo figlio" : "Nuovo nodo", model: "", conf: 0.35,
       classes: [], parent_classes: [], padding: 0.05, children: [] };
   }
   function addRoot() { const n = defaultNode(null); state.tree.push(n); select(n.id); markDirty(); }
@@ -821,7 +951,7 @@ async function viewPipeline(id) {
           onclick: () => select(n.id), onkeydown: (e) => { if (e.key === "Enter") select(n.id); } },
           h("div", { class: "tnode-head" },
             h("span", { class: "dot" }), h("b", { class: "tnode-name" }, n.name),
-            m ? taskBadge(m.task) : null, modelStatus(m)),
+            m ? taskBadge(m.task) : null, modelStatus(m, !!n.model)),
           h("div", { class: "small muted tnode-sub" }, `${n.model || "nessun modello"} · ${scope}`
             + (n.classes.length ? ` · tiene: ${n.classes.join(", ")}` : "")),
           editable ? h("div", { class: "tnode-actions" },

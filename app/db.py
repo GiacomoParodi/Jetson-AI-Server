@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS jobs_user ON jobs(user_id, created_at);
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -69,6 +73,23 @@ def init() -> None:
     with connection() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
+
+
+# ---------------------------------------------------------------- impostazioni
+
+def get_setting(key: str) -> str | None:
+    with connection() as conn:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_setting(key: str, value: str | None) -> None:
+    with connection() as conn:
+        if value is None:
+            conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+        else:
+            conn.execute("INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
 
 
 # ---------------------------------------------------------------- utenti

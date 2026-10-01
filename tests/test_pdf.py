@@ -1,9 +1,19 @@
 import pymupdf
 import pytest
 
+from app import db
 from app.services import ollama
 from app.tasks import JobContext, TaskError
 from app.tasks import pdf_qa
+
+
+@pytest.fixture(autouse=True)
+def database():
+    db.init()
+
+
+def use_embedding(monkeypatch):
+    monkeypatch.setattr(ollama, "selected_embed", lambda: "nomic-embed-text")
 
 
 def make_pdf(path, pages):
@@ -66,6 +76,7 @@ def test_long_pdf_uses_retrieval_and_cache(tmp_path, monkeypatch):
         return [[1.0 if "magazzino" in t else 0.0, 1.0] for t in texts]
 
     prompts = []
+    use_embedding(monkeypatch)
     monkeypatch.setattr(ollama, "embed", fake_embed)
     monkeypatch.setattr(ollama, "chat", lambda m, **kw: prompts.append(m[-1]["content"]) or "girasole42 (p. 8)")
 
@@ -88,6 +99,7 @@ def test_embedding_failure_falls_back_to_keywords(tmp_path, monkeypatch):
     def broken_embed(*a, **k):
         raise ollama.OllamaError("modello mancante")
 
+    use_embedding(monkeypatch)
     monkeypatch.setattr(ollama, "embed", broken_embed)
     monkeypatch.setattr(ollama, "chat", lambda m, **kw: "ok")
     result = pdf_qa.PdfQA().run(ctx_for(tmp_path, pdf, "Qual è il codice segreto?"))
@@ -100,3 +112,22 @@ def test_invalid_pdf(tmp_path):
     bad.write_bytes(b"non sono un pdf")
     with pytest.raises(TaskError):
         pdf_qa.PdfQA().run(ctx_for(tmp_path, bad, "?"))
+
+
+def test_without_embedding_model_uses_keywords(tmp_path, monkeypatch):
+    filler = "Testo di riempimento qualsiasi. " * 60
+    pdf = tmp_path / "kw2.pdf"
+    make_pdf(pdf, [filler] * 10 + ["La chiave è sotto il vaso di gerani."])
+    monkeypatch.setattr(ollama, "selected_embed", lambda: "")
+    monkeypatch.setattr(ollama, "embed", lambda *a, **k: pytest.fail("nessun embedding doveva essere usato"))
+    monkeypatch.setattr(ollama, "chat", lambda m, **kw: "ok")
+    result = pdf_qa.PdfQA().run(ctx_for(tmp_path, pdf, "Dove si trova la chiave? gerani"))
+    assert any("gerani" in s["text"] for s in result["sources"])
+    assert any("Nessun modello di embedding" in n for n in result["notes"])
+
+
+def test_full_document_threshold_follows_context(monkeypatch):
+    monkeypatch.setattr(ollama, "selected_context", lambda: 4096)
+    small = pdf_qa.full_doc_chars()
+    monkeypatch.setattr(ollama, "selected_context", lambda: 8192)
+    assert pdf_qa.full_doc_chars() == 2 * small

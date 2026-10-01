@@ -39,9 +39,11 @@ class Settings:
 
         # LLM locale tramite Ollama
         self.ollama_url = _env("JAS_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-        self.llm_model = _env("JAS_LLM_MODEL", "qwen2.5:3b")
-        self.embed_model = _env("JAS_EMBED_MODEL", "nomic-embed-text")
-        self.llm_context = int(_env("JAS_LLM_CONTEXT", "8192"))
+        # I modelli si scelgono dalla pagina Modelli; questi valori servono solo
+        # come scelta iniziale se impostati nel file .env.
+        self.llm_model = _env("JAS_LLM_MODEL", "")
+        self.embed_model = _env("JAS_EMBED_MODEL", "")
+        self.llm_context = int(_env("JAS_LLM_CONTEXT", "4096"))
         self.ollama_keep_alive = _env("JAS_OLLAMA_KEEP_ALIVE", "5m")
 
         # YOLO: uso di TensorRT (auto = se disponibile)

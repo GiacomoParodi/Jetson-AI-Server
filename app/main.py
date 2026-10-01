@@ -461,6 +461,72 @@ def delete_pipeline(pipeline_id: int, _: dict = Depends(admin_user)):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- modelli LLM (Ollama)
+
+@app.get("/api/llm")
+def llm_status(_: dict = Depends(current_user)):
+    installed = ollama.installed_details()
+    return {
+        "running": installed is not None,
+        "installed": installed or [],
+        "llm_model": ollama.selected_llm(),
+        "embed_model": ollama.selected_embed(),
+        "context": ollama.selected_context(),
+        "context_choices": ollama.CONTEXT_CHOICES,
+        "pulls": ollama.pull_status(),
+    }
+
+
+class LlmPullIn(BaseModel):
+    name: str
+
+
+@app.post("/api/llm/pull")
+def llm_pull(body: LlmPullIn, _: dict = Depends(admin_user)):
+    name = body.name.strip()
+    if not ollama.valid_name(name):
+        raise HTTPException(400, "Nome del modello non valido (es. qwen2.5:3b)")
+    if ollama.installed_models() is None:
+        raise HTTPException(503, "Ollama non è in esecuzione")
+    ollama.start_pull(name)
+    return {"ok": True}
+
+
+class LlmSelectIn(BaseModel):
+    llm_model: str = ""
+    embed_model: str = ""
+    context: int = 4096
+
+
+@app.post("/api/llm/select")
+def llm_select(body: LlmSelectIn, _: dict = Depends(admin_user)):
+    installed = ollama.installed_models()
+    if installed is None:
+        raise HTTPException(503, "Ollama non è in esecuzione")
+    for value, label in ((body.llm_model, "LLM"), (body.embed_model, "di embedding")):
+        if value and not ollama.has_model(value, installed):
+            raise HTTPException(400, f"Il modello {label} '{value}' non è scaricato")
+    if body.context not in ollama.CONTEXT_CHOICES:
+        raise HTTPException(400, "Dimensione del contesto non valida")
+    ollama.select(body.llm_model, body.embed_model, body.context)
+    return {"ok": True}
+
+
+@app.delete("/api/llm/models/{name:path}")
+def llm_delete(name: str, _: dict = Depends(admin_user)):
+    if not ollama.valid_name(name):
+        raise HTTPException(400, "Nome non valido")
+    if name in (ollama.selected_llm(), ollama.selected_embed()):
+        raise HTTPException(400, "Il modello è quello scelto in uso: scegline un altro prima di eliminarlo")
+    try:
+        ollama.delete_model(name)
+    except ollama.OllamaError as e:
+        raise HTTPException(400, str(e)) from None
+    except Exception:
+        raise HTTPException(503, "Ollama non è in esecuzione") from None
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------- stato del sistema
 
 @app.get("/api/system")
@@ -472,7 +538,7 @@ def system_status(_: dict = Depends(current_user)):
         "queued": db.count_queued(),
         "running": worker.current_job is not None,
         "ollama": {"running": models is not None, "models": models or [],
-                   "llm_model": settings.llm_model, "embed_model": settings.embed_model},
+                   "llm_model": ollama.selected_llm(), "embed_model": ollama.selected_embed()},
         "cuda": yolo_models.cuda_available(),
         "tensorrt": yolo_models.tensorrt_version() if yolo_models.tensorrt_enabled() else None,
     }

@@ -8,7 +8,7 @@ su file caricati da remoto, tutto in locale (nessun dato lascia il dispositivo).
   trovati dal padre. Editor visuale per aggiungere, spostare, duplicare ed eliminare nodi.
 - **Ottimizzazione automatica per il Jetson**: ogni modello caricato viene ricompilato con
   **TensorRT FP16** e viene mostrato il guadagno di velocità.
-- **Domande su PDF** con un LLM locale (Ollama, es. Qwen 2.5 3B), anche su **PDF scansionati**
+- **Domande su PDF** con un LLM locale scelto da te (Ollama), anche su **PDF scansionati**
   grazie all'OCR. Le risposte citano le pagine.
 - **Interfaccia web** utilizzabile da PC e telefono, **più utenti** con login.
 - **Coda dei lavori**: un lavoro pesante alla volta, con avanzamento e annullamento.
@@ -28,7 +28,7 @@ bash deploy/install.sh
 Lo script:
 1. installa i pacchetti di sistema (ffmpeg, Tesseract OCR italiano/inglese, …);
 2. crea l'ambiente Python con **PyTorch per Jetson** (GPU) e le dipendenze;
-3. installa **Ollama** e scarica il modello LLM e quello per la ricerca nel testo;
+3. installa **Ollama** (senza scaricare modelli: li scegli tu dall'interfaccia);
 4. chiede nome e password del primo **amministratore**;
 5. registra il servizio **systemd**, che parte a ogni accensione e si riavvia se si blocca;
 6. installa **Tailscale** e attiva l'accesso HTTPS.
@@ -112,18 +112,31 @@ il file. Ottieni il video annotato (un colore per nodo, uguale a quello dell'edi
 per nodo e classe e un CSV in cui ogni riga ha `id` e `parent_id`, così sai a quale oggetto del
 padre appartiene ogni risultato. Il lavoro usa la pipeline com'era al momento dell'invio.
 
-### Scegliere un altro LLM
+### Modelli linguistici (Ollama)
 
-Nel file `.env` cambia `JAS_LLM_MODEL` (es. `llama3.2:3b`, `gemma3:4b`, oppure `qwen2.5:1.5b`
-per risposte più veloci), poi:
+Nessun modello YOLO o LLM viene scaricato o scelto in automatico. Nella pagina **Modelli**, sezione
+"Modelli linguistici", un amministratore:
 
-```bash
-ollama pull llama3.2:3b
-sudo systemctl restart jetson-ai-server
-```
+1. scarica i modelli scrivendo il nome esatto dalla libreria di [ollama.com](https://ollama.com/library)
+   (es. `famiglia:3b`), con la barra di avanzamento;
+2. sceglie l'**LLM in uso**, l'**embedding in uso** (facoltativo) e la dimensione del **contesto**;
+3. elimina i modelli che non servono più.
 
-Con 8 GB di memoria condivisa tra CPU e GPU conviene restare sui modelli fino a ~4 miliardi di
-parametri. Prima di ogni lavoro YOLO il server scarica l'LLM dalla memoria per lasciare spazio.
+Finché non scegli un LLM, il compito "Domande su un documento PDF" resta disattivato.
+
+**Parametri consigliati per il Jetson Orin Nano (8 GB, memoria condivisa con la GPU):**
+
+| | LLM | Embedding (facoltativo) |
+|---|---|---|
+| Parametri | 1–4 miliardi (`:1.5b`, `:3b`, `:4b`). 7–8B girano ma lenti | sotto ~600 milioni |
+| Quantizzazione | `Q4_K_M` (il tag normale). Evita `fp16` e `q8` | quella di serie |
+| Peso del file | sotto ~3 GB | sotto ~1,2 GB |
+| Lingua | per l'italiano: famiglie Qwen, Gemma, Llama recenti | **multilingue** per documenti in italiano |
+
+Contesto: 4096 token vanno bene quasi sempre; 8192 se vuoi che documenti più lunghi vengano letti
+per intero (più memoria, più lento); 2048 è il più veloce. La pagina segnala i modelli scaricati
+che non rispettano questi parametri. Prima di ogni lavoro YOLO il server libera la memoria
+dell'LLM, quindi i due non si contendono la RAM.
 
 ## Aggiungere un nuovo compito (plugin)
 
