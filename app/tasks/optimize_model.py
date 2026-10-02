@@ -17,6 +17,8 @@ class OptimizeModel(Task):
     title = "Ottimizzazione modello (TensorRT)"
     description = "Ricompila un modello YOLO per la GPU del Jetson."
     hidden = True
+    section = "video"
+    activity = "l'ottimizzazione di un modello"
     needs_file = False
     params = [Param("model", "Modello", "text", required=True)]
     rerun_label = "Ottimizza di nuovo"

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -23,9 +23,11 @@ from pydantic import BaseModel
 from . import __version__, db
 from .config import settings
 from .security import hash_password, hash_token, login_limiter, new_token, validate_new_password, verify_password
-from .services import ollama, pipelines, system, yolo_models
+from .services import chat, documents, ollama, pipelines, system, yolo_models
+from .services.gate import gate
 from .tasks import TaskError, registry
-from .worker import check_models_on_startup, input_dir, job_dir, output_dir, queue_optimization, worker
+from .worker import (check_models_on_startup, input_dir, job_dir, output_dir, queue_document_index,
+                     queue_optimization, worker)
 
 log = logging.getLogger("app")
 STATIC_DIR = Path(__file__).parent / "static"
@@ -176,6 +178,8 @@ def delete_user(user_id: int, admin: dict = Depends(admin_user)):
             raise HTTPException(400, "L'utente ha un lavoro in esecuzione: annullalo prima")
     for job in db.list_jobs(user_id, limit=100000):
         shutil.rmtree(job_dir(job["id"]), ignore_errors=True)
+    for doc in db.list_documents(user_id):
+        documents.delete_files(doc["id"])
     db.delete_user(user_id)
     return {"ok": True}
 
@@ -205,6 +209,7 @@ def _job_out(job: dict[str, Any]) -> dict[str, Any]:
     out = {k: job[k] for k in ("id", "task", "params", "input_name", "status", "progress", "message",
                                "result", "error", "created_at", "started_at", "finished_at", "username")}
     out["task_title"] = task.title if task else job["task"]
+    out["section"] = task.section if task else ""
     out["rerun_label"] = task.rerun_label if task else None
     out["queue_position"] = db.queue_position(job["id"]) if job["status"] == "queued" else None
     return out
@@ -265,9 +270,15 @@ async def create_job(
 
 
 @app.get("/api/jobs")
-def list_jobs(all: bool = False, limit: int = 100, user: dict = Depends(current_user)):
+def list_jobs(all: bool = False, limit: int = 100, section: str | None = None,
+              user: dict = Depends(current_user)):
+    """Lavori dell'utente (di tutti per un amministratore con all=true). Con `section` solo quelli
+    di un'area (es. "video"), senza i lavori interni."""
     owner = None if (all and user["is_admin"]) else user["id"]
-    return [_job_out(j) for j in db.list_jobs(owner, limit=min(limit, 500))]
+    tasks = None
+    if section is not None:
+        tasks = [t.id for t in registry.all() if t.section == section and not t.hidden]
+    return [_job_out(j) for j in db.list_jobs(owner, limit=min(limit, 500), tasks=tasks)]
 
 
 @app.get("/api/jobs/{job_id}")
@@ -527,6 +538,262 @@ def llm_delete(name: str, _: dict = Depends(admin_user)):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- lettore documenti
+
+DOC_OCR_MODES = ("automatica", "sempre", "mai")
+
+
+def _doc_for(doc_id: int, user: dict) -> dict[str, Any]:
+    doc = db.get_document(doc_id)
+    if not doc or (doc["user_id"] != user["id"] and not user["is_admin"]):
+        raise HTTPException(404, "Documento non trovato")
+    return doc
+
+
+def _doc_out(doc: dict[str, Any]) -> dict[str, Any]:
+    keys = ("id", "title", "filename", "size_bytes", "pages", "ocr_pages", "status", "error", "notes",
+            "embed_model", "created_at", "updated_at", "username", "conversation_count", "last_activity")
+    out = {k: doc[k] for k in keys}
+    out["semantic"] = bool(doc["embed_model"])
+    # L'indice è stato creato con un modello di embedding diverso da quello scelto ora.
+    out["semantic_outdated"] = (doc["embed_model"] or "") != ollama.selected_embed()
+    if doc["status"] == "processing" and doc["job_id"]:
+        job = db.get_job(doc["job_id"])
+        if job:
+            out["progress"] = job["progress"] if job["status"] == "running" else 0
+            out["message"] = job["message"] if job["status"] == "running" else "In coda"
+    return out
+
+
+@app.get("/api/documents")
+def list_documents(all: bool = False, user: dict = Depends(current_user)):
+    owner = None if (all and user["is_admin"]) else user["id"]
+    return [_doc_out(d) for d in db.list_documents(owner)]
+
+
+@app.post("/api/documents")
+async def upload_document(file: UploadFile = File(...), ocr: str = Form("automatica"),
+                          user: dict = Depends(current_user)):
+    name = _safe_filename(file.filename or "")
+    if not name.lower().endswith(".pdf"):
+        raise HTTPException(400, "Carica un file PDF")
+    if ocr not in DOC_OCR_MODES:
+        ocr = "automatica"
+    settings.documents_dir.mkdir(parents=True, exist_ok=True)
+    tmp = settings.documents_dir / f".upload-{time.time_ns()}.pdf"
+    try:
+        await _save_upload(file, tmp)
+        pages = await run_in_threadpool(documents.inspect_pdf, tmp)
+    except documents.DocumentError as e:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(400, str(e)) from None
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    title = Path(name).stem.strip()[:120] or "Documento"
+    doc_id = db.create_document(user["id"], title, name, tmp.stat().st_size, pages)
+    documents.doc_dir(doc_id).mkdir(parents=True, exist_ok=True)
+    tmp.replace(documents.pdf_path(doc_id))
+    queue_document_index(doc_id, user["id"], ocr)
+    return _doc_out(db.get_document(doc_id))
+
+
+@app.get("/api/documents/{doc_id}")
+def get_document(doc_id: int, user: dict = Depends(current_user)):
+    return _doc_out(_doc_for(doc_id, user))
+
+
+class TitleIn(BaseModel):
+    title: str
+
+
+@app.patch("/api/documents/{doc_id}")
+def rename_document(doc_id: int, body: TitleIn, user: dict = Depends(current_user)):
+    _doc_for(doc_id, user)
+    title = " ".join(body.title.split())[:120]
+    if not title:
+        raise HTTPException(400, "Il nome non può essere vuoto")
+    db.update_document(doc_id, title=title)
+    return _doc_out(db.get_document(doc_id))
+
+
+def _cancel_document_job(doc: dict[str, Any]) -> None:
+    if doc["status"] == "processing" and doc["job_id"]:
+        if not db.cancel_if_queued(doc["job_id"]):
+            worker.cancel(doc["job_id"])
+
+
+@app.delete("/api/documents/{doc_id}")
+def delete_document(doc_id: int, user: dict = Depends(current_user)):
+    doc = _doc_for(doc_id, user)
+    _cancel_document_job(doc)
+    db.delete_document(doc_id)
+    documents.delete_files(doc_id)
+    return {"ok": True}
+
+
+@app.post("/api/documents/{doc_id}/reindex")
+def reindex_document(doc_id: int, user: dict = Depends(current_user)):
+    doc = _doc_for(doc_id, user)
+    if doc["status"] == "processing":
+        raise HTTPException(400, "Il documento è già in elaborazione")
+    if not documents.pdf_path(doc_id).is_file():
+        raise HTTPException(400, "Il file originale non è più disponibile")
+    db.update_document(doc_id, status="processing", error=None)
+    queue_document_index(doc_id, doc["user_id"])
+    return _doc_out(db.get_document(doc_id))
+
+
+@app.get("/api/documents/{doc_id}/file")
+def document_file(doc_id: int, user: dict = Depends(current_user)):
+    doc = _doc_for(doc_id, user)
+    return FileResponse(documents.pdf_path(doc_id), media_type="application/pdf", filename=doc["filename"])
+
+
+@app.get("/api/documents/{doc_id}/text")
+def document_text(doc_id: int, user: dict = Depends(current_user)):
+    doc = _doc_for(doc_id, user)
+    path = documents.full_text_path(doc_id)
+    if not path.is_file():
+        raise HTTPException(404, "Il testo non è ancora disponibile")
+    return FileResponse(path, media_type="text/plain", filename=f"{doc['title']}.txt")
+
+
+@app.get("/api/documents/{doc_id}/pages/{page}")
+async def document_page(doc_id: int, page: int, w: int = 900, user: dict = Depends(current_user)):
+    _doc_for(doc_id, user)
+    try:
+        data = await run_in_threadpool(documents.render_page, doc_id, page, w)
+    except documents.DocumentError as e:
+        raise HTTPException(404, str(e)) from None
+    except Exception:
+        raise HTTPException(404, "Pagina non disponibile") from None
+    return Response(data, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+
+# ---------------------------------------------------------------- conversazioni
+
+def _conv_for(conv_id: int, user: dict) -> dict[str, Any]:
+    conv = db.get_conversation(conv_id)
+    if not conv or (conv["user_id"] != user["id"] and not user["is_admin"]):
+        raise HTTPException(404, "Conversazione non trovata")
+    return conv
+
+
+def _conv_out(conv: dict[str, Any]) -> dict[str, Any]:
+    keys = ("id", "document_id", "document_title", "title", "created_at", "updated_at", "message_count",
+            "last_question", "username")
+    return {k: conv.get(k) for k in keys}
+
+
+@app.get("/api/documents/{doc_id}/conversations")
+def document_conversations(doc_id: int, user: dict = Depends(current_user)):
+    _doc_for(doc_id, user)
+    owner = None if user["is_admin"] else user["id"]
+    return [_conv_out(c) for c in db.list_conversations(document_id=doc_id, user_id=owner)]
+
+
+@app.post("/api/documents/{doc_id}/conversations")
+def create_conversation(doc_id: int, user: dict = Depends(current_user)):
+    _doc_for(doc_id, user)
+    conv_id = db.create_conversation(doc_id, user["id"], chat.DEFAULT_TITLE)
+    return _conv_out(db.get_conversation(conv_id))
+
+
+@app.get("/api/conversations")
+def list_conversations(all: bool = False, limit: int = 300, user: dict = Depends(current_user)):
+    owner = None if (all and user["is_admin"]) else user["id"]
+    return [_conv_out(c) for c in db.list_conversations(user_id=owner, limit=min(limit, 1000))]
+
+
+@app.get("/api/conversations/{conv_id}")
+def get_conversation(conv_id: int, user: dict = Depends(current_user)):
+    conv = _conv_for(conv_id, user)
+    return {**_conv_out(conv), "messages": db.list_messages(conv_id)}
+
+
+@app.patch("/api/conversations/{conv_id}")
+def rename_conversation(conv_id: int, body: TitleIn, user: dict = Depends(current_user)):
+    _conv_for(conv_id, user)
+    title = " ".join(body.title.split())[:120]
+    if not title:
+        raise HTTPException(400, "Il titolo non può essere vuoto")
+    db.update_conversation(conv_id, title=title, updated_at=db.get_conversation(conv_id)["updated_at"])
+    return _conv_out(db.get_conversation(conv_id))
+
+
+@app.delete("/api/conversations/{conv_id}")
+def delete_conversation(conv_id: int, user: dict = Depends(current_user)):
+    _conv_for(conv_id, user)
+    db.delete_conversation(conv_id)
+    return {"ok": True}
+
+
+_streaming: set[int] = set()
+_streaming_lock = threading.Lock()
+
+
+class MessageIn(BaseModel):
+    content: str
+
+
+@app.post("/api/conversations/{conv_id}/messages")
+def send_message(conv_id: int, body: MessageIn, user: dict = Depends(current_user)):
+    """Invia una domanda e riceve la risposta in streaming (Server-Sent Events, una riga `data: {json}` per evento)."""
+    conv = _conv_for(conv_id, user)
+    doc = db.get_document(conv["document_id"])
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(400, "Scrivi una domanda")
+    if len(content) > chat.MAX_QUESTION_CHARS:
+        raise HTTPException(400, f"Domanda troppo lunga (massimo {chat.MAX_QUESTION_CHARS} caratteri)")
+    if not doc or doc["status"] != "ready":
+        raise HTTPException(409, "Il documento non è ancora pronto: attendi la fine dell'elaborazione")
+
+    def events():
+        with _streaming_lock:
+            busy = conv_id in _streaming
+            _streaming.add(conv_id)
+        if busy:
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'In questa conversazione è già in corso una risposta'}, ensure_ascii=False)}\n\n"
+            return
+        try:
+            for event in chat.run_turn(conv, doc, content):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            with _streaming_lock:
+                _streaming.discard(conv_id)
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---------------------------------------------------------------- panoramica
+
+@app.get("/api/overview")
+def overview(user: dict = Depends(current_user)):
+    uid = user["id"]
+    docs = db.list_documents(uid)
+    video_tasks = [t.id for t in registry.all() if t.section == "video" and not t.hidden]
+    analyses = db.list_jobs(uid, limit=100000, tasks=video_tasks)
+    others = [t.describe() for t in registry.all() if not t.section and not t.hidden]
+    return {
+        "documents": {
+            "count": len(docs),
+            "processing": sum(1 for d in docs if d["status"] == "processing"),
+            "conversations": db.count_conversations(uid),
+            "llm": ollama.selected_llm(),
+        },
+        "video": {
+            "analyses": len(analyses),
+            "active": sum(1 for j in analyses if j["status"] in ("queued", "running")),
+            "pipelines": len(pipelines.list_all()),
+            "models": len(yolo_models.list_models()),
+        },
+        "other_tools": others,
+    }
+
+
 # ---------------------------------------------------------------- stato del sistema
 
 @app.get("/api/system")
@@ -537,6 +804,8 @@ def system_status(_: dict = Depends(current_user)):
         "version": __version__,
         "queued": db.count_queued(),
         "running": worker.current_job is not None,
+        "busy_with": (gate.holder.label if gate.holder else None),
+        "waiting": gate.waiting,
         "ollama": {"running": models is not None, "models": models or [],
                    "llm_model": ollama.selected_llm(), "embed_model": ollama.selected_embed()},
         "cuda": yolo_models.cuda_available(),

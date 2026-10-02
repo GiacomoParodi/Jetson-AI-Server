@@ -6,7 +6,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 import httpx
 
@@ -177,17 +177,16 @@ def embed(texts: list[str], model: str | None = None, batch_size: int = 32) -> l
     return vectors
 
 
-def chat(
+def chat_stream(
     messages: list[dict[str, str]],
     model: str | None = None,
-    on_token: Callable[[str], None] | None = None,
     options: dict | None = None,
-) -> str:
-    """Chat in streaming; on_token viene chiamata a ogni pezzo di testo generato
-    (e può sollevare un'eccezione per interrompere la generazione)."""
+) -> Iterator[str]:
+    """Genera la risposta un pezzo di testo alla volta. Chiudendo il generatore
+    (es. quando l'utente interrompe) la connessione si chiude e Ollama smette di generare."""
     model = model or selected_llm()
     if not model:
-        raise OllamaError("Nessun modello LLM scelto: sceglilo nella pagina Modelli")
+        raise OllamaError("Nessun modello linguistico scelto: sceglilo nella pagina Modelli linguistici")
     body = {
         "model": model,
         "messages": messages,
@@ -195,26 +194,93 @@ def chat(
         "keep_alive": settings.ollama_keep_alive,
         "options": {"num_ctx": selected_context(), "temperature": 0.2, **(options or {})},
     }
-    parts: list[str] = []
     try:
         with _client() as c, c.stream("POST", "/api/chat", json=body) as r:
             if r.status_code != 200:
                 r.read()
-                raise OllamaError(f"LLM non disponibile ({r.status_code}): {r.text[:200]}")
+                raise OllamaError(f"Modello non disponibile ({r.status_code}): {r.text[:200]}")
             for line in _lines(r.iter_lines()):
                 data = json.loads(line)
                 if data.get("error"):
                     raise OllamaError(data["error"])
                 piece = data.get("message", {}).get("content", "")
                 if piece:
-                    parts.append(piece)
-                    if on_token:
-                        on_token(piece)
+                    yield piece
                 if data.get("done"):
                     break
     except httpx.ConnectError:
         raise OllamaError("Ollama non è raggiungibile: il servizio è avviato?") from None
+    except httpx.ReadTimeout:
+        raise OllamaError("Il modello non risponde (tempo scaduto)") from None
+
+
+def chat(
+    messages: list[dict[str, str]],
+    model: str | None = None,
+    on_token: Callable[[str], None] | None = None,
+    options: dict | None = None,
+) -> str:
+    """Risposta completa; on_token riceve ogni pezzo (e può sollevare un'eccezione per interrompere)."""
+    parts: list[str] = []
+    for piece in chat_stream(messages, model, options):
+        parts.append(piece)
+        if on_token:
+            on_token(piece)
     return "".join(parts)
+
+
+class ThinkFilter:
+    """Toglie da un flusso di testo ciò che sta tra <think> e </think>: alcuni modelli
+    scrivono lì il loro ragionamento, che non deve finire nella risposta."""
+
+    OPEN, CLOSE = "<think>", "</think>"
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._inside = False
+        self._strip_next = False
+
+    @staticmethod
+    def _partial(text: str, tag: str) -> int:
+        """Lunghezza del più lungo finale di `text` che è l'inizio di `tag` (tag spezzato tra due pezzi)."""
+        for n in range(min(len(text), len(tag) - 1), 0, -1):
+            if tag.startswith(text[-n:]):
+                return n
+        return 0
+
+    def feed(self, piece: str) -> str:
+        self._buf += piece
+        out: list[str] = []
+        while True:
+            if self._inside:
+                i = self._buf.find(self.CLOSE)
+                if i == -1:
+                    keep = self._partial(self._buf, self.CLOSE)
+                    self._buf = self._buf[len(self._buf) - keep:] if keep else ""
+                    break
+                self._buf = self._buf[i + len(self.CLOSE):]
+                self._inside = False
+                self._strip_next = True
+            else:
+                i = self._buf.find(self.OPEN)
+                if i == -1:
+                    keep = self._partial(self._buf, self.OPEN)
+                    out.append(self._buf[:len(self._buf) - keep])
+                    self._buf = self._buf[len(self._buf) - keep:] if keep else ""
+                    break
+                out.append(self._buf[:i])
+                self._buf = self._buf[i + len(self.OPEN):]
+                self._inside = True
+        text = "".join(out)
+        if self._strip_next and text:
+            text = text.lstrip()
+            self._strip_next = bool(not text)
+        return text
+
+    def flush(self) -> str:
+        text = "" if self._inside else self._buf
+        self._buf = ""
+        return text.lstrip() if self._strip_next else text
 
 
 def _lines(it: Iterable[str]) -> Iterable[str]:

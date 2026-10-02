@@ -60,15 +60,17 @@ class FrameOutput:
 
 class YoloPipeline(Task):
     id = "yolo_pipeline"
-    title = "Analisi YOLO (pipeline)"
+    title = "Analisi video"
+    section = "video"
+    activity = "un'analisi video"
     description = (
-        "Esegue un albero di modelli YOLO (detection, segmentazione, classificazione) su un video "
-        "o un'immagine. Restituisce il file annotato, i conteggi per nodo e un CSV con tutti i risultati."
+        "Esegue una pipeline di modelli di visione (rilevamento, segmentazione, classificazione) su un video "
+        "o un'immagine. Restituisce il file annotato, i conteggi per fase e un CSV con tutti i risultati."
     )
     accept = VIDEO_EXT + IMAGE_EXT
     params = [
         Param("pipeline", "Pipeline", "select", required=True,
-              help="Gli amministratori creano e modificano le pipeline nella pagina Pipeline"),
+              help="Gli amministratori creano e modificano le pipeline nella sezione Pipeline"),
         Param("track", "Conta gli oggetti unici (tracking)", "bool", default=True,
               help="Solo video, per i nodi radice di detection/segmentazione"),
         Param("frame_step", "Analizza un frame ogni", "number", default=1, min=1, max=30, step=1,
@@ -82,7 +84,7 @@ class YoloPipeline(Task):
         except ImportError as e:
             return False, f"Libreria mancante: {e.name}"
         if not self.param_choices(self.params[0]):
-            return False, "Nessuna pipeline pronta: un amministratore deve crearne una nella pagina Pipeline"
+            return False, "Nessuna pipeline pronta: un amministratore deve crearne una nella sezione Pipeline"
         return True, ""
 
     def param_choices(self, param: Param) -> list[Any] | None:

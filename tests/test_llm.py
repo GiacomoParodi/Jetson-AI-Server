@@ -37,16 +37,6 @@ def test_pull_validation(client, login, monkeypatch):
     assert started == ["qwen2.5:3b"]
 
 
-def test_pdf_task_needs_a_chosen_model(client, login, monkeypatch):
-    from app.tasks.pdf_qa import PdfQA
-
-    monkeypatch.setattr(ollama, "installed_models", lambda: ["qwen2.5:3b"])
-    ok, reason = PdfQA().available()
-    assert not ok and "Nessun modello LLM scelto" in reason
-    monkeypatch.setattr(ollama, "selected_llm", lambda: "qwen2.5:3b")
-    assert PdfQA().available() == (True, "")
-
-
 def test_cli_set_llm(client, monkeypatch, capsys):
     from app import cli
 

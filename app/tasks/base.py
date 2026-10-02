@@ -109,8 +109,12 @@ class Task:
     params: list[Param] = []
     # Testo del pulsante per rieseguire sullo stesso file con altri parametri.
     rerun_label: str = "Riesegui con altri parametri"
-    # Compito interno: non compare nell'elenco "Nuovo lavoro" e non si avvia da lì.
+    # Compito interno: non compare tra gli strumenti e non si avvia a mano.
     hidden: bool = False
+    # Area dell'interfaccia a cui appartiene: "video", "docs" oppure "" (altri strumenti, es. plugin).
+    section: str = ""
+    # Come lo si descrive a chi aspetta il proprio turno ("Il server sta eseguendo …").
+    activity: str = "un'elaborazione"
 
     def available(self) -> tuple[bool, str]:
         """(True, "") se il compito può girare; altrimenti (False, motivo)."""
@@ -136,6 +140,7 @@ class Task:
             "params": params,
             "rerun_label": self.rerun_label,
             "hidden": self.hidden,
+            "section": self.section,
             "available": ok,
             "unavailable_reason": reason,
         }

@@ -43,11 +43,10 @@ def test_cookie_login_and_logout(client, users):
 
 def test_tasks_listed(client, login):
     tasks = {t["id"]: t for t in client.get("/api/tasks", headers=login("mario")).json()}
-    assert {"echo", "yolo_pipeline", "pdf_qa"} <= set(tasks)
+    assert {"echo", "yolo_pipeline"} <= set(tasks)
+    assert tasks["yolo_pipeline"]["section"] == "video" and tasks["echo"]["section"] == ""
     # I compiti interni non compaiono.
-    assert "optimize_model" not in tasks
-    # Senza Ollama il compito PDF è segnalato come non disponibile.
-    assert tasks["pdf_qa"]["available"] is False
+    assert "optimize_model" not in tasks and "index_document" not in tasks and "pdf_qa" not in tasks
 
 
 def test_job_flow(client, login):

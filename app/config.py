@@ -53,6 +53,10 @@ class Settings:
         self.pipeline_max_depth = int(_env("JAS_PIPELINE_MAX_DEPTH", "20"))
         self.pipeline_max_nodes = int(_env("JAS_PIPELINE_MAX_NODES", "200"))
 
+        # Chat, analisi video e indicizzazione di norma si mettono in fila per non esaurire
+        # la memoria (8 GB condivisi). Con "on" possono girare insieme.
+        self.concurrent_ai = _env("JAS_CONCURRENT_AI", "off").lower() in ("on", "1", "true", "yes", "si", "sì")
+
         # OCR (lingue Tesseract)
         self.ocr_languages = _env("JAS_OCR_LANG", "ita+eng")
 
@@ -72,11 +76,15 @@ class Settings:
         return self.data_dir / "models" / "yolo"
 
     @property
+    def documents_dir(self) -> Path:
+        return self.data_dir / "documents"
+
+    @property
     def cache_dir(self) -> Path:
         return self.data_dir / "cache"
 
     def ensure_dirs(self) -> None:
-        for d in (self.data_dir, self.jobs_dir, self.models_dir, self.cache_dir):
+        for d in (self.data_dir, self.jobs_dir, self.models_dir, self.cache_dir, self.documents_dir):
             d.mkdir(parents=True, exist_ok=True)
 
 

@@ -13,6 +13,7 @@ import traceback
 
 from . import db
 from .config import settings
+from .services.gate import gate
 from .tasks import JobCancelled, JobContext, TaskError, registry
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class Worker:
 
     def start(self) -> None:
         db.fail_interrupted_jobs()
+        requeue_unfinished_documents()
         self._thread = threading.Thread(target=self._loop, name="job-worker", daemon=True)
         self._thread.start()
 
@@ -61,12 +63,23 @@ class Worker:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            job = db.claim_next_job()
+            job = None
+            ticket = gate.enter("job", "un'elaborazione")
+            try:
+                # Si aspetta il proprio turno: se una chat sta rispondendo, i lavori restano in coda.
+                while not gate.wait(ticket, timeout=1.0):
+                    if self._stop.is_set():
+                        return
+                job = db.claim_next_job()
+                if job is not None:
+                    task = registry.get(job["task"])
+                    ticket.label = task.activity if task else "un'elaborazione"
+                    self._run(job)
+            finally:
+                gate.leave(ticket)
             if job is None:
                 self._wake.wait(timeout=5)
                 self._wake.clear()
-                continue
-            self._run(job)
 
     def _run(self, job: dict) -> None:
         job_id = job["id"]
@@ -129,6 +142,27 @@ def queue_optimization(model_name: str, user_id: int | None = None) -> str | Non
     job_id = db.create_job(user_id, "optimize_model", {"model": model_name}, None)
     worker.notify()
     return job_id
+
+
+def queue_document_index(doc_id: int, user_id: int, ocr: str = "automatica") -> str:
+    """Mette in coda l'elaborazione (lettura, OCR, indice) di un documento."""
+    job_id = db.create_job(user_id, "index_document", {"document_id": doc_id, "ocr": ocr}, None)
+    db.update_document(doc_id, job_id=job_id)
+    worker.notify()
+    return job_id
+
+
+def requeue_unfinished_documents() -> None:
+    """All'avvio: i documenti rimasti 'in elaborazione' senza un lavoro attivo vengono rimessi in coda."""
+    try:
+        active = {j["params"].get("document_id") for j in db.list_jobs(None, limit=1000, tasks=["index_document"])
+                  if j["status"] in ("queued", "running")}
+        for doc in db.documents_in_status("processing"):
+            if doc["id"] not in active:
+                log.info("Documento %s da riprendere: rimesso in coda", doc["id"])
+                queue_document_index(doc["id"], doc["user_id"])
+    except Exception:
+        log.exception("Ripresa dei documenti non riuscita")
 
 
 def check_models_on_startup() -> None:

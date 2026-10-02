@@ -43,6 +43,43 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS jobs_user ON jobs(user_id, created_at);
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    pages INTEGER NOT NULL DEFAULT 0,
+    ocr_pages INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    error TEXT,
+    notes TEXT NOT NULL DEFAULT '[]',
+    embed_model TEXT,
+    job_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS documents_user ON documents(user_id, updated_at);
+CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conversations_doc ON conversations(document_id, updated_at);
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    sources TEXT,
+    model TEXT,
+    status TEXT NOT NULL DEFAULT 'ok',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS messages_conv ON messages(conversation_id, id);
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -194,13 +231,20 @@ def get_job(job_id: str) -> dict[str, Any] | None:
     return _job_dict(row) if row else None
 
 
-def list_jobs(user_id: int | None, limit: int = 100) -> list[dict[str, Any]]:
-    """Lavori di un utente (o di tutti se user_id è None), dal più recente."""
+def list_jobs(user_id: int | None, limit: int = 100, tasks: list[str] | None = None) -> list[dict[str, Any]]:
+    """Lavori di un utente (o di tutti se user_id è None), dal più recente.
+    Con `tasks` si tengono solo i lavori di quei compiti."""
     query = "SELECT j.*, u.username FROM jobs j JOIN users u ON u.id = j.user_id"
+    conditions: list[str] = []
     args: list[Any] = []
     if user_id is not None:
-        query += " WHERE j.user_id = ?"
+        conditions.append("j.user_id = ?")
         args.append(user_id)
+    if tasks is not None:
+        conditions.append("j.task IN (%s)" % ", ".join("?" for _ in tasks))
+        args.extend(tasks)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY j.created_at DESC LIMIT ?"
     args.append(limit)
     with connection() as conn:
@@ -275,3 +319,159 @@ def fail_interrupted_jobs() -> None:
 def delete_job(job_id: str) -> None:
     with connection() as conn:
         conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
+
+# ---------------------------------------------------------------- documenti
+
+_DOC_SELECT = (
+    "SELECT d.*, u.username, "
+    "(SELECT COUNT(*) FROM conversations c WHERE c.document_id = d.id) AS conversation_count, "
+    "(SELECT MAX(c.updated_at) FROM conversations c WHERE c.document_id = d.id) AS last_activity "
+    "FROM documents d JOIN users u ON u.id = d.user_id"
+)
+
+
+def _doc_dict(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    d["notes"] = json.loads(d["notes"] or "[]")
+    return d
+
+
+def create_document(user_id: int, title: str, filename: str, size_bytes: int, pages: int) -> int:
+    now = time.time()
+    with connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO documents (user_id, title, filename, size_bytes, pages, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'processing', ?, ?)",
+            (user_id, title, filename, size_bytes, pages, now, now),
+        )
+        return int(cur.lastrowid)
+
+
+def get_document(doc_id: int) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute(_DOC_SELECT + " WHERE d.id = ?", (doc_id,)).fetchone()
+    return _doc_dict(row) if row else None
+
+
+def list_documents(user_id: int | None) -> list[dict[str, Any]]:
+    """Documenti di un utente (o di tutti se user_id è None), dal più recente."""
+    query = _DOC_SELECT
+    args: list[Any] = []
+    if user_id is not None:
+        query += " WHERE d.user_id = ?"
+        args.append(user_id)
+    query += " ORDER BY d.created_at DESC"
+    with connection() as conn:
+        return [_doc_dict(r) for r in conn.execute(query, args).fetchall()]
+
+
+def update_document(doc_id: int, **fields: Any) -> None:
+    if "notes" in fields:
+        fields["notes"] = json.dumps(fields["notes"])
+    fields["updated_at"] = time.time()
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    with connection() as conn:
+        conn.execute(f"UPDATE documents SET {cols} WHERE id = ?", (*fields.values(), doc_id))
+
+
+def delete_document(doc_id: int) -> None:
+    with connection() as conn:
+        conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+
+
+def documents_in_status(status: str) -> list[dict[str, Any]]:
+    with connection() as conn:
+        return [_doc_dict(r) for r in conn.execute(_DOC_SELECT + " WHERE d.status = ?", (status,)).fetchall()]
+
+
+# ---------------------------------------------------------------- conversazioni e messaggi
+
+_CONV_SELECT = (
+    "SELECT c.*, d.title AS document_title, u.username, "
+    "(SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count, "
+    "(SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.role = 'user' "
+    " ORDER BY m.id DESC LIMIT 1) AS last_question "
+    "FROM conversations c JOIN documents d ON d.id = c.document_id JOIN users u ON u.id = c.user_id"
+)
+
+
+def create_conversation(document_id: int, user_id: int, title: str) -> int:
+    now = time.time()
+    with connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO conversations (document_id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (document_id, user_id, title, now, now),
+        )
+        return int(cur.lastrowid)
+
+
+def get_conversation(conv_id: int) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute(_CONV_SELECT + " WHERE c.id = ?", (conv_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_conversations(document_id: int | None = None, user_id: int | None = None,
+                       limit: int = 300) -> list[dict[str, Any]]:
+    """Conversazioni dalla più recente. Quelle senza messaggi non compaiono nell'elenco."""
+    conditions = ["EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)"]
+    args: list[Any] = []
+    if document_id is not None:
+        conditions.append("c.document_id = ?")
+        args.append(document_id)
+    if user_id is not None:
+        conditions.append("c.user_id = ?")
+        args.append(user_id)
+    query = _CONV_SELECT + " WHERE " + " AND ".join(conditions) + " ORDER BY c.updated_at DESC LIMIT ?"
+    args.append(limit)
+    with connection() as conn:
+        return [dict(r) for r in conn.execute(query, args).fetchall()]
+
+
+def update_conversation(conv_id: int, **fields: Any) -> None:
+    fields.setdefault("updated_at", time.time())
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    with connection() as conn:
+        conn.execute(f"UPDATE conversations SET {cols} WHERE id = ?", (*fields.values(), conv_id))
+
+
+def delete_conversation(conv_id: int) -> None:
+    with connection() as conn:
+        conn.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
+
+
+def add_message(conv_id: int, role: str, content: str, sources: list[dict[str, Any]] | None = None,
+                model: str | None = None, status: str = "ok") -> dict[str, Any]:
+    now = time.time()
+    with connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, sources, model, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (conv_id, role, content, json.dumps(sources) if sources else None, model, status, now),
+        )
+        conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
+        msg_id = int(cur.lastrowid)
+    return {"id": msg_id, "conversation_id": conv_id, "role": role, "content": content,
+            "sources": sources or [], "model": model, "status": status, "created_at": now}
+
+
+def list_messages(conv_id: int) -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute("SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", (conv_id,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["sources"] = json.loads(d["sources"]) if d["sources"] else []
+        out.append(d)
+    return out
+
+
+def count_conversations(user_id: int | None) -> int:
+    query = "SELECT COUNT(*) FROM conversations c WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)"
+    args: list[Any] = []
+    if user_id is not None:
+        query += " AND c.user_id = ?"
+        args.append(user_id)
+    with connection() as conn:
+        return int(conn.execute(query, args).fetchone()[0])
