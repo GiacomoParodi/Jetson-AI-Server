@@ -4,7 +4,8 @@
 # Uso (dalla cartella del progetto, con l'utente normale, NON con sudo):
 #   bash deploy/install.sh
 #
-# Lo script si può rilanciare: salta i passaggi già fatti.
+# Lo script si può rilanciare: salta i passaggi già fatti. Alla fine esegue un controllo
+# completo (deploy/check.sh) e riassume eventuali avvisi.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -13,11 +14,11 @@ VENV="$DIR/.venv"
 PY="$VENV/bin/python"
 PIP="$VENV/bin/pip"
 
-# Ruote PyTorch per JetPack 6 (Python 3.10). Se cambiano, aggiornale seguendo
-# https://docs.ultralytics.com/guides/nvidia-jetson/ (sezione "Install PyTorch and Torchvision").
-TORCH_WHEEL="https://github.com/ultralytics/assets/releases/download/v0.0.0/torch-2.5.0a0+872d972e41.nv24.08-cp310-cp310-linux_aarch64.whl"
-TORCHVISION_WHEEL="https://github.com/ultralytics/assets/releases/download/v0.0.0/torchvision-0.20.0a0+afc54f7-cp310-cp310-linux_aarch64.whl"
-
+# Ruote PyTorch per JetPack 6 (Python 3.10). Se cambiano, passale da fuori:
+#   TORCH_WHEEL=<url> TORCHVISION_WHEEL=<url> bash deploy/install.sh
+# (vedi https://docs.ultralytics.com/guides/nvidia-jetson/ → "Install PyTorch and Torchvision").
+TORCH_WHEEL="${TORCH_WHEEL:-https://github.com/ultralytics/assets/releases/download/v0.0.0/torch-2.5.0a0+872d972e41.nv24.08-cp310-cp310-linux_aarch64.whl}"
+TORCHVISION_WHEEL="${TORCHVISION_WHEEL:-https://github.com/ultralytics/assets/releases/download/v0.0.0/torchvision-0.20.0a0+afc54f7-cp310-cp310-linux_aarch64.whl}"
 
 # LLM da scaricare e impostare in uso (Qwen3-4B-Instruct-2507, quantizzato Q4_K_M).
 LLM_CANDIDATES=(
@@ -27,35 +28,50 @@ LLM_CANDIDATES=(
   "hf.co/Qwen/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M"
 )
 
+WARNINGS=()
 step() { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
-warn() { printf '\033[1;33m!! %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33m!! %s\033[0m\n' "$*"; WARNINGS+=("$*"); }
+die()  { printf '\033[1;31mERRORE: %s\033[0m\n' "$*" >&2; exit 1; }
 
 if [[ $EUID -eq 0 ]]; then
-  echo "Lancia lo script con il tuo utente normale (userà sudo quando serve)."
-  exit 1
+  die "lancia lo script con il tuo utente normale (userà sudo quando serve)."
 fi
+command -v sudo >/dev/null 2>&1 || die "sudo non trovato."
 
+step "Controlli preliminari"
 IS_JETSON=0
 if [[ -f /etc/nv_tegra_release ]]; then
   IS_JETSON=1
   echo "Jetson rilevato: $(head -n1 /etc/nv_tegra_release)"
-  grep -q "R36" /etc/nv_tegra_release || warn "Questo script è pensato per JetPack 6 (L4T R36): potrebbero servire ruote PyTorch diverse."
+  grep -q "R36" /etc/nv_tegra_release || warn "Pensato per JetPack 6 (L4T R36): con un'altra versione potrebbero servire ruote PyTorch diverse."
 else
   warn "Non sembra un Jetson: installo la versione standard (CPU o GPU desktop)."
+fi
+command -v python3 >/dev/null 2>&1 || die "python3 non trovato."
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || die "serve Python 3.10 o superiore."
+if ! curl -fsS --max-time 15 -o /dev/null https://pypi.org/simple/pip/; then
+  die "nessun accesso a internet (pypi.org non raggiungibile): controlla la connessione e rilancia."
+fi
+free_gb="$(df -BG --output=avail "$DIR" | tail -n1 | tr -dc '0-9')"
+if [[ -n "$free_gb" && "$free_gb" -lt 15 ]]; then
+  warn "Spazio libero ${free_gb} GB: ne servono almeno 15 (PyTorch, modelli, LLM). Meglio avere un SSD NVMe."
 fi
 
 step "Pacchetti di sistema"
 sudo apt-get update
 sudo apt-get install -y python3-venv python3-pip python3-dev curl ffmpeg \
-  tesseract-ocr tesseract-ocr-ita tesseract-ocr-eng libopenblas-dev
+  tesseract-ocr tesseract-ocr-ita tesseract-ocr-eng libopenblas-dev libgl1 libglib2.0-0
 if [[ $IS_JETSON -eq 1 ]]; then
   # cuSPARSELt serve al PyTorch per JetPack 6.
   if ! dpkg -s libcusparselt0 >/dev/null 2>&1; then
     tmp="$(mktemp -d)"
-    curl -fsSL -o "$tmp/cuda-keyring.deb" https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb
-    sudo dpkg -i "$tmp/cuda-keyring.deb"
-    sudo apt-get update
-    sudo apt-get install -y libcusparselt0 libcusparselt-dev
+    if curl -fsSL -o "$tmp/cuda-keyring.deb" https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb \
+       && sudo dpkg -i "$tmp/cuda-keyring.deb" && sudo apt-get update \
+       && sudo apt-get install -y libcusparselt0 libcusparselt-dev; then
+      :
+    else
+      warn "cuSPARSELt non installato: PyTorch potrebbe non partire con la GPU."
+    fi
     rm -rf "$tmp"
   fi
 fi
@@ -70,64 +86,91 @@ fi
 if [[ $IS_JETSON -eq 1 ]]; then
   if ! "$PY" -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
     step "PyTorch per Jetson (con GPU)"
-    "$PIP" install "numpy<2" "$TORCH_WHEEL" "$TORCHVISION_WHEEL"
+    if ! "$PIP" install "numpy<2" "$TORCH_WHEEL" "$TORCHVISION_WHEEL"; then
+      warn "Ruote PyTorch non scaricate: YOLO userà la CPU (lento). Trova gli indirizzi aggiornati su https://docs.ultralytics.com/guides/nvidia-jetson/ e rilancia con TORCH_WHEEL=… TORCHVISION_WHEEL=… bash deploy/install.sh"
+    fi
   fi
-  "$PIP" install "numpy<2" onnx onnxslim
+  "$PIP" install "numpy<2" onnx onnxslim || warn "onnx/onnxslim non installati: l'esportazione TensorRT potrebbe fallire."
 fi
 
 step "Dipendenze del server"
 if [[ $IS_JETSON -eq 1 ]]; then
   # Evita che pip sostituisca il PyTorch per Jetson con quello generico.
-  "$PIP" install -r "$DIR/requirements.txt" "numpy<2" \
-    --constraint <("$PIP" freeze | grep -iE '^(torch|torchvision)==' || true)
+  CONSTRAINTS="$(mktemp)"
+  "$PIP" freeze | grep -iE '^(torch|torchvision)==' > "$CONSTRAINTS" || true
+  "$PIP" install -r "$DIR/requirements.txt" "numpy<2" --constraint "$CONSTRAINTS"
+  rm -f "$CONSTRAINTS"
 else
   "$PIP" install -r "$DIR/requirements.txt"
 fi
 
 if [[ $IS_JETSON -eq 1 ]]; then
-  if "$PY" -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
+  if "$PY" -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
     echo "PyTorch vede la GPU: ok"
   else
     warn "PyTorch NON vede la GPU: YOLO funzionerà ma lentamente (solo CPU)."
-    warn "Controlla le ruote PyTorch per la tua versione di JetPack: https://docs.ultralytics.com/guides/nvidia-jetson/"
   fi
-  "$PY" -c "import tensorrt" 2>/dev/null && echo "TensorRT disponibile: ok" \
-    || warn "TensorRT non trovato in Python (sudo apt install nvidia-jetpack): niente ottimizzazione TensorRT."
+  if "$PY" -c "import tensorrt" 2>/dev/null; then
+    echo "TensorRT disponibile: ok"
+  else
+    warn "TensorRT non trovato in Python (sudo apt install nvidia-jetpack): niente ottimizzazione TensorRT."
+  fi
 fi
 
 step "Configurazione"
 [[ -f "$DIR/.env" ]] || cp "$DIR/.env.example" "$DIR/.env"
 mkdir -p "$DIR/data/models/yolo" "$DIR/plugins"
-
 # Nessun modello YOLO viene scaricato o aggiunto in automatico: li carichi tu
 # da Analisi video → Modelli di visione (o con: .venv/bin/python -m app.cli add-model file.pt).
 
 step "Ollama (motore per gli LLM locali)"
 if ! command -v ollama >/dev/null 2>&1; then
-  curl -fsSL https://ollama.com/install.sh | sh
+  curl -fsSL https://ollama.com/install.sh | sh || warn "Installazione di Ollama non riuscita: senza non funziona la chat con i documenti."
 fi
-sudo systemctl enable --now ollama || true
-for i in $(seq 1 30); do curl -fs http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 1; done
+if command -v ollama >/dev/null 2>&1; then
+  # Poca memoria sul Jetson: un solo modello alla volta, una sola richiesta, scaricato da solo dopo l'uso.
+  sudo mkdir -p /etc/systemd/system/ollama.service.d
+  sudo tee /etc/systemd/system/ollama.service.d/jetson.conf >/dev/null <<'EOF'
+[Service]
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+Environment="OLLAMA_NUM_PARALLEL=1"
+EOF
+  sudo systemctl daemon-reload
+  sudo systemctl enable ollama || true
+  sudo systemctl restart ollama || true
+  for _ in $(seq 1 30); do curl -fs http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 1; done
+  if ! curl -fs http://127.0.0.1:11434/api/tags >/dev/null; then
+    warn "Ollama non risponde: controlla con  journalctl -u ollama -n 50"
+  fi
+fi
 
 step "LLM scelto: Qwen3-4B-Instruct-2507"
 # Il modello è pubblicato con nomi diversi (libreria Ollama o GGUF su Hugging Face):
 # si prova in ordine e si usa il primo che si scarica. Altri modelli si aggiungono
 # e si scelgono da Lettore documenti → Modelli linguistici.
 LLM_SCELTO=""
-for candidate in "${LLM_CANDIDATES[@]}"; do
-  echo "Provo: $candidate"
-  if ollama pull "$candidate"; then LLM_SCELTO="$candidate"; break; fi
-done
+if command -v ollama >/dev/null 2>&1 && curl -fs http://127.0.0.1:11434/api/tags >/dev/null; then
+  for candidate in "${LLM_CANDIDATES[@]}"; do
+    echo "Provo: $candidate"
+    if ollama pull "$candidate"; then LLM_SCELTO="$candidate"; break; fi
+  done
+fi
 if [[ -n "$LLM_SCELTO" ]]; then
-  "$PY" -m app.cli set-llm "$LLM_SCELTO"
+  # --if-unset: se in un'installazione precedente hai già scelto un altro modello, non lo tocca.
+  (cd "$DIR" && "$PY" -m app.cli set-llm "$LLM_SCELTO" --if-unset)
 else
   warn "Qwen3-4B-Instruct-2507 non scaricato: scaricalo da Lettore documenti → Modelli linguistici (nome su ollama.com o hf.co/…)."
 fi
 
 step "Primo utente amministratore"
-if [[ "$("$PY" -m app.cli count-users)" == "0" ]]; then
-  read -rp "Nome dell'amministratore: " ADMIN
-  "$PY" -m app.cli create-user "$ADMIN" --admin
+if [[ "$(cd "$DIR" && "$PY" -m app.cli count-users)" == "0" ]]; then
+  if [[ -t 0 ]]; then
+    read -rp "Nome dell'amministratore (3-32 caratteri: lettere, numeri, . _ -): " ADMIN
+    (cd "$DIR" && "$PY" -m app.cli create-user "$ADMIN" --admin) \
+      || warn "Amministratore non creato: riprova con  cd $DIR && .venv/bin/python -m app.cli create-user NOME --admin"
+  else
+    warn "Terminale non interattivo: crea l'amministratore con  cd $DIR && .venv/bin/python -m app.cli create-user NOME --admin"
+  fi
 else
   echo "Utenti già presenti: salto."
 fi
@@ -139,29 +182,46 @@ sudo systemctl daemon-reload
 sudo systemctl enable jetson-ai-server
 sudo systemctl restart jetson-ai-server
 
-step "Accesso remoto con Tailscale"
-if ! command -v tailscale >/dev/null 2>&1; then
-  curl -fsSL https://tailscale.com/install.sh | sh
-fi
-if ! tailscale status >/dev/null 2>&1; then
-  echo "Si aprirà un link: aprilo nel browser e accedi al tuo account Tailscale."
-  sudo tailscale up
-fi
 PORT="$(grep -E '^JAS_PORT=' "$DIR/.env" | cut -d= -f2 || true)"
 PORT="${PORT:-8000}"
-# HTTPS con certificato valido sull'indirizzo https://<nome-jetson>.<tailnet>.ts.net, raggiungibile
-# SOLO dai dispositivi della tua rete Tailscale (non è "funnel": nulla viene esposto su internet).
-SERVE_OK=0
-if sudo tailscale serve --bg "$PORT"; then
-  SERVE_OK=1
+HEALTH=0
+for _ in $(seq 1 40); do
+  if curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 || curl -fs -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then HEALTH=1; break; fi
+  sleep 1
+done
+if [[ $HEALTH -eq 1 ]]; then
+  echo "Il server risponde su http://127.0.0.1:$PORT: ok"
 else
-  warn "tailscale serve non riuscito: attiva HTTPS nella console Tailscale (DNS → HTTPS Certificates) e rilancia: sudo tailscale serve --bg $PORT"
+  warn "Il server non risponde: guarda  journalctl -u jetson-ai-server -n 50"
 fi
-TS_NAME="$(tailscale status --json 2>/dev/null | "$PY" -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || true)"
+
+step "Accesso remoto con Tailscale"
+if ! command -v tailscale >/dev/null 2>&1; then
+  curl -fsSL https://tailscale.com/install.sh | sh || warn "Installazione di Tailscale non riuscita."
+fi
+SERVE_OK=0
+TS_NAME=""
+if command -v tailscale >/dev/null 2>&1; then
+  if ! tailscale status >/dev/null 2>&1; then
+    echo "Si aprirà un link: aprilo nel browser (anche dal telefono) e accedi al tuo account Tailscale."
+    sudo tailscale up || warn "Accesso a Tailscale non completato: rilancia  sudo tailscale up"
+  fi
+  # HTTPS con certificato valido sull'indirizzo https://<nome-jetson>.<tailnet>.ts.net, raggiungibile
+  # SOLO dai dispositivi della tua rete Tailscale (non è "funnel": nulla viene esposto su internet).
+  if sudo tailscale serve --bg "$PORT"; then
+    SERVE_OK=1
+  else
+    warn "tailscale serve non riuscito: nella console Tailscale (login.tailscale.com → DNS) attiva MagicDNS e HTTPS Certificates, poi: sudo tailscale serve --bg $PORT"
+  fi
+  TS_NAME="$(tailscale status --json 2>/dev/null | "$PY" -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || true)"
+fi
 
 if grep -qE '^JAS_HOST=(0\.0\.0\.0|::)' "$DIR/.env"; then
   warn "Nel file .env JAS_HOST apre il server a tutta la rete locale (senza cifratura). Per chiuderlo: JAS_HOST=127.0.0.1 e poi sudo systemctl restart jetson-ai-server"
 fi
+
+step "Controllo finale"
+bash "$DIR/deploy/check.sh" || true
 
 step "Fatto!"
 echo "Il server parte da solo a ogni accensione del Jetson."
@@ -169,7 +229,7 @@ echo
 if [[ $SERVE_OK -eq 1 && -n "$TS_NAME" ]]; then
   echo "Indirizzo (dai dispositivi della tua rete Tailscale):  https://$TS_NAME"
 else
-  echo "Tailscale non è ancora configurato per il server: vedi l'avviso qui sopra."
+  echo "Tailscale non è ancora configurato per il server: vedi gli avvisi qui sotto."
 fi
 echo "Dal Jetson stesso:  http://localhost:$PORT"
 echo
@@ -180,6 +240,13 @@ echo "Consigli: attiva l'autenticazione a due fattori sull'account Tailscale, ab
 echo "dei dispositivi nella console (login.tailscale.com) e usa password lunghe per gli utenti."
 echo
 echo "Log del server:  journalctl -u jetson-ai-server -f"
-echo
-echo "I modelli caricati vengono ottimizzati con TensorRT in automatico (qualche minuto ciascuno)."
-echo "Per le massime prestazioni: sudo nvpmodel -m 0 && sudo jetson_clocks"
+echo "Controllo:       bash deploy/check.sh        Aggiornamento:  bash deploy/update.sh"
+echo "Massime prestazioni:  sudo nvpmodel -m 0 && sudo jetson_clocks"
+echo "I modelli YOLO caricati vengono ottimizzati con TensorRT in automatico (qualche minuto ciascuno)."
+
+if [[ ${#WARNINGS[@]} -gt 0 ]]; then
+  printf '\n\033[1;33mDa sistemare (%d):\033[0m\n' "${#WARNINGS[@]}"
+  for w in "${WARNINGS[@]}"; do printf '  - %s\n' "$w"; done
+else
+  printf '\n\033[1;32mTutto a posto, nessun avviso.\033[0m\n'
+fi

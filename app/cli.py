@@ -6,12 +6,14 @@
   python -m app.cli add-model percorso/modello.pt [--name NOME.pt]
   python -m app.cli optimize NOME.pt        # ricompila con TensorRT per il Jetson
   python -m app.cli list-models
-  python -m app.cli set-llm NOME [--context 4096]   # LLM Ollama in uso
+  python -m app.cli set-llm NOME [--context 4096] [--if-unset]   # LLM Ollama in uso
+  python -m app.cli status                  # riepilogo: utenti, modelli, documenti
 """
 from __future__ import annotations
 
 import argparse
 import getpass
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -52,10 +54,15 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("set-llm", help="Imposta l'LLM Ollama in uso (già scaricato)")
     s.add_argument("name")
     s.add_argument("--context", type=int, default=None)
+    s.add_argument("--if-unset", action="store_true", help="Imposta il modello solo se non ne è già stato scelto uno")
+    sub.add_parser("status", help="Riepilogo di utenti, modelli e documenti")
     args = parser.parse_args(argv)
 
     db.init()
     if args.cmd == "create-user":
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", args.username):
+            print("Nome utente: 3-32 caratteri tra lettere, numeri, . _ -", file=sys.stderr)
+            return 1
         if db.get_user_by_name(args.username):
             print(f"L'utente {args.username} esiste già", file=sys.stderr)
             return 1
@@ -75,9 +82,14 @@ def main(argv: list[str] | None = None) -> int:
         print(db.count_users())
     elif args.cmd in ("add-model", "optimize", "list-models"):
         return _models_cmd(args)
+    elif args.cmd == "status":
+        return _status()
     elif args.cmd == "set-llm":
         from .services import ollama
 
+        if args.if_unset and ollama.selected_llm():
+            print(f"LLM già scelto ({ollama.selected_llm()}): lo lascio com'è")
+            return 0
         installed = ollama.installed_models()
         if installed is not None and not ollama.has_model(args.name, installed):
             print(f"{args.name} non è scaricato in Ollama (ollama pull {args.name})", file=sys.stderr)
@@ -88,6 +100,21 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         ollama.select(args.name, ollama.selected_embed(), context)
         print(f"LLM in uso: {args.name} (contesto {context})")
+    return 0
+
+
+def _status() -> int:
+    from .services import ollama, yolo_models
+
+    users = db.list_users()
+    docs = db.list_documents(None)
+    models = yolo_models.list_models()
+    print(f"Utenti: {len(users)} (amministratori: {sum(1 for u in users if u['is_admin'])})")
+    print(f"Documenti: {len(docs)} (pronti: {sum(1 for d in docs if d['status'] == 'ready')})")
+    print(f"Modelli di visione: {len(models)} (pronti: {sum(1 for m in models if m['status'] == 'ready')})")
+    llm, emb = ollama.selected_llm(), ollama.selected_embed()
+    print(f"Modello linguistico: {llm or 'nessuno scelto'} (contesto {ollama.selected_context()})")
+    print(f"Embedding: {emb or 'nessuno (ricerca per parole chiave)'}")
     return 0
 
 

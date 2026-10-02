@@ -33,8 +33,6 @@ function renderLogin() {
 
 // ------------------------------------------------------------------ struttura
 
-let $main, $nav, $subnav, $status;
-
 /** Le due aree dell'applicazione, ognuna con il proprio sottomenu. */
 const SECTIONS = [
   { key: "docs", label: "Lettore documenti", href: "#/docs", subs: [

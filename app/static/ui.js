@@ -3,6 +3,7 @@
 /* Funzioni comuni a tutta l'interfaccia: elementi, API, formattazione, moduli. */
 
 const $app = document.getElementById("app");
+let $main, $nav, $subnav, $status; // parti della pagina, create da renderShell() in app.js
 let me = null;
 let pollTimer = null;
 let statusTimer = null;

@@ -1440,6 +1440,7 @@ window.DEMO_COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus",
 /* Funzioni comuni a tutta l'interfaccia: elementi, API, formattazione, moduli. */
 
 const $app = document.getElementById("app");
+let $main, $nav, $subnav, $status; // parti della pagina, create da renderShell() in app.js
 let me = null;
 let pollTimer = null;
 let statusTimer = null;
@@ -2994,8 +2995,6 @@ function renderLogin() {
 }
 
 // ------------------------------------------------------------------ struttura
-
-let $main, $nav, $subnav, $status;
 
 /** Le due aree dell'applicazione, ognuna con il proprio sottomenu. */
 const SECTIONS = [

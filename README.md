@@ -28,28 +28,94 @@ un'analisi, scaricare modelli, uscire ed entrare come utente senza permessi di a
 
 Dopo modifiche a `app/static/` si rigenera con `python demo/build.py`.
 
-## Installazione sul Jetson
+## Installazione (da zero)
 
-Requisiti: Jetson Orin Nano con **JetPack 6** (Ubuntu 22.04), connessione a internet per l'installazione.
+### Cosa ti serve
+
+| Cosa | Dettagli |
+|---|---|
+| Jetson Orin Nano Developer Kit | con **JetPack 6** (Ubuntu 22.04) già installato e primo avvio completato (utente creato). Meglio con un **SSD NVMe**: servono almeno 15 GB liberi. |
+| Connessione a internet | solo per l'installazione e per scaricare modelli. Poi il server lavora in locale. |
+| **Account Tailscale** gratuito | [login.tailscale.com](https://login.tailscale.com): ti basta accedere con Google/Microsoft/GitHub/Apple. Serve per usare il server da fuori casa. |
+| App Tailscale sui dispositivi da cui userai il server | PC, telefono, tablet: [tailscale.com/download](https://tailscale.com/download), con lo **stesso account**. |
+| I tuoi modelli YOLO (`.pt`) | non vengono scaricati in automatico: li carichi tu dall'interfaccia. |
+
+Un account Tailscale non basta da solo: servono anche i punti sopra, soprattutto JetPack 6 e internet.
+
+### Passo 1 – Prepara l'account Tailscale (una volta, dal PC)
+
+1. Crea l'account su [login.tailscale.com](https://login.tailscale.com).
+2. Nella console apri **DNS** e verifica che **MagicDNS** sia attivo, poi premi **Enable HTTPS** (certificati HTTPS).
+   Senza questo passaggio l'indirizzo `https://…ts.net` non funziona.
+   Nota: il nome della macchina (`nome-jetson.tuarete.ts.net`) finisce nei registri pubblici dei
+   certificati; non metterci informazioni personali.
+3. Consigliato: attiva l'autenticazione a due fattori sull'account.
+
+### Passo 2 – Installa sul Jetson
+
+Dal terminale del Jetson (o da SSH), con il tuo utente normale (**non** `sudo`):
 
 ```bash
+sudo apt-get update && sudo apt-get install -y git
 git clone https://github.com/giacomoparodi/prova.git jetson-ai-server
 cd jetson-ai-server
 bash deploy/install.sh
 ```
 
-Lo script:
+Lo script (puoi rilanciarlo senza danni, salta quello già fatto) controlla internet e spazio, poi:
+
 1. installa i pacchetti di sistema (ffmpeg, Tesseract OCR italiano/inglese, …);
 2. crea l'ambiente Python con **PyTorch per Jetson** (GPU) e le dipendenze;
-3. installa **Ollama**, scarica **Qwen3-4B-Instruct-2507** (Q4_K_M) e lo imposta come LLM in uso;
+3. installa **Ollama**, scarica **Qwen3-4B-Instruct-2507** (Q4_K_M, qualche GB: ci vuole un po') e lo imposta come LLM in uso;
 4. chiede nome e password del primo **amministratore**;
-5. registra il servizio **systemd**, che parte a ogni accensione e si riavvia se si blocca;
-6. installa **Tailscale** e attiva l'accesso HTTPS.
+5. registra il servizio **systemd**: parte a ogni accensione e si riavvia se si blocca;
+6. installa **Tailscale**: ti mostra un link da aprire nel browser per collegare il Jetson al tuo account, poi attiva l'HTTPS privato;
+7. esegue un controllo finale e ti elenca gli eventuali **avvisi** da sistemare.
 
-Alla fine stampa gli indirizzi da aprire nel browser.
+Alla fine stampa l'indirizzo `https://nome-jetson.tuarete.ts.net`.
 
-> Consiglio: per le prestazioni massime imposta la modalità di alimentazione più alta
-> (`sudo nvpmodel -m 0` o "MAXN SUPER" dal menu in alto a destra) e usa un SSD NVMe per i dati.
+### Passo 3 – Usalo
+
+1. Sul PC/telefono installa l'app Tailscale e accedi con lo stesso account.
+2. Apri l'indirizzo stampato dall'installazione e accedi con l'amministratore.
+3. **Analisi video → Modelli di visione**: carica i tuoi `.pt` (verranno ottimizzati con TensorRT).
+4. **Lettore documenti**: carica un PDF e comincia a chiedere.
+
+Per le prestazioni massime: `sudo nvpmodel -m 0 && sudo jetson_clocks` (o "MAXN SUPER" dal menu in alto a destra).
+
+### Verifica e risoluzione dei problemi
+
+```bash
+bash deploy/check.sh        # stato di server, GPU, TensorRT, Ollama, LLM, Tailscale
+```
+
+| Sintomo | Cosa fare |
+|---|---|
+| `tailscale serve` non riuscito / l'indirizzo https non si apre | Console Tailscale → DNS → attiva MagicDNS e HTTPS, poi `sudo tailscale serve --bg 8000`. |
+| Il sito non si apre dal telefono | Controlla che l'app Tailscale sia attiva e con lo stesso account. |
+| "PyTorch NON vede la GPU" | Gli indirizzi delle ruote PyTorch sono cambiati: copia quelli nuovi da [docs.ultralytics.com/guides/nvidia-jetson](https://docs.ultralytics.com/guides/nvidia-jetson/) e rilancia `TORCH_WHEEL=… TORCHVISION_WHEEL=… bash deploy/install.sh`. |
+| TensorRT non trovato | `sudo apt install nvidia-jetpack`, poi `sudo systemctl restart jetson-ai-server`. |
+| Qwen3 non scaricato | Da Lettore documenti → Modelli linguistici scrivi il nome del modello (da ollama.com o `hf.co/…`). |
+| Risposte lente o memoria esaurita | Usa un LLM più piccolo o riduci il contesto (Modelli linguistici); lascia `JAS_CONCURRENT_AI=off`. |
+| Il servizio non parte | `journalctl -u jetson-ai-server -n 50`. |
+| Password dimenticata | `.venv/bin/python -m app.cli reset-password NOME`. |
+
+## Aggiornamento, backup, disinstallazione
+
+```bash
+bash deploy/update.sh                         # scarica la nuova versione e riavvia (dati e .env intatti)
+sudo systemctl stop jetson-ai-server
+tar czf ~/backup-jas.tgz data .env            # backup: database, documenti, modelli, impostazioni
+sudo systemctl start jetson-ai-server
+```
+
+Disinstallazione:
+
+```bash
+sudo systemctl disable --now jetson-ai-server && sudo rm /etc/systemd/system/jetson-ai-server.service
+sudo tailscale serve reset                    # toglie la pubblicazione HTTPS
+rm -rf ~/jetson-ai-server                     # cancella anche i dati!
+```
 
 ## Accesso da remoto e sicurezza
 
@@ -297,7 +363,9 @@ journalctl -u jetson-ai-server -f          # log in tempo reale
 sudo systemctl restart jetson-ai-server    # riavvio (dopo modifiche a .env o plugin)
 .venv/bin/python -m app.cli list-users     # utenti
 .venv/bin/python -m app.cli reset-password NOME
-git pull && sudo systemctl restart jetson-ai-server   # aggiornamento
+bash deploy/update.sh                      # aggiornamento
+.venv/bin/python -m app.cli status         # riepilogo (utenti, documenti, modelli, LLM)
+bash deploy/check.sh                       # controllo completo
 ```
 
 I dati (database, file caricati, risultati, modelli) sono in `data/`.
