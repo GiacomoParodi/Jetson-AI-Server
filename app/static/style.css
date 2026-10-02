@@ -345,7 +345,7 @@ button.danger.small-btn { color: var(--danger); }
 .md blockquote { margin: 0 0 .65em; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--muted); }
 .md-table { overflow-x: auto; margin: 0 0 .65em; }
 .md-table table { font-size: .9rem; }
-.cite { font: inherit; font-size: .72rem; font-weight: 700; line-height: 1.5; padding: 0 7px; margin: 0 1px; border-radius: 99px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent-strong); cursor: pointer; vertical-align: baseline; display: inline; }
+.cite { white-space: nowrap; flex: none; font: inherit; font-size: .72rem; font-weight: 700; line-height: 1.5; padding: 0 7px; margin: 0 1px; border-radius: 99px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent-strong); cursor: pointer; vertical-align: baseline; display: inline; }
 .cite:hover { background: var(--accent); color: var(--on-accent); }
 .msg-foot { display: flex; gap: 12px; align-items: center; margin-top: 4px; }
 .msg-foot .link { padding: 0; font-size: .8rem; }

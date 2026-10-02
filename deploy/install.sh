@@ -100,7 +100,7 @@ step "Configurazione"
 mkdir -p "$DIR/data/models/yolo" "$DIR/plugins"
 
 # Nessun modello YOLO viene scaricato o aggiunto in automatico: li carichi tu
-# dalla pagina Modelli (o con: .venv/bin/python -m app.cli add-model file.pt).
+# da Analisi video → Modelli di visione (o con: .venv/bin/python -m app.cli add-model file.pt).
 
 step "Ollama (motore per gli LLM locali)"
 if ! command -v ollama >/dev/null 2>&1; then
@@ -112,7 +112,7 @@ for i in $(seq 1 30); do curl -fs http://127.0.0.1:11434/api/tags >/dev/null && 
 step "LLM scelto: Qwen3-4B-Instruct-2507"
 # Il modello è pubblicato con nomi diversi (libreria Ollama o GGUF su Hugging Face):
 # si prova in ordine e si usa il primo che si scarica. Altri modelli si aggiungono
-# e si scelgono dalla pagina Modelli.
+# e si scelgono da Lettore documenti → Modelli linguistici.
 LLM_SCELTO=""
 for candidate in "${LLM_CANDIDATES[@]}"; do
   echo "Provo: $candidate"
@@ -121,7 +121,7 @@ done
 if [[ -n "$LLM_SCELTO" ]]; then
   "$PY" -m app.cli set-llm "$LLM_SCELTO"
 else
-  warn "Qwen3-4B-Instruct-2507 non scaricato: scaricalo dalla pagina Modelli (nome su ollama.com o hf.co/…)."
+  warn "Qwen3-4B-Instruct-2507 non scaricato: scaricalo da Lettore documenti → Modelli linguistici (nome su ollama.com o hf.co/…)."
 fi
 
 step "Primo utente amministratore"

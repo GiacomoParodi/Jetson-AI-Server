@@ -39,7 +39,7 @@ class Settings:
 
         # LLM locale tramite Ollama
         self.ollama_url = _env("JAS_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-        # I modelli si scelgono dalla pagina Modelli; questi valori servono solo
+        # I modelli si scelgono da Lettore documenti → Modelli linguistici; questi valori servono solo
         # come scelta iniziale se impostati nel file .env.
         self.llm_model = _env("JAS_LLM_MODEL", "")
         self.embed_model = _env("JAS_EMBED_MODEL", "")

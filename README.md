@@ -3,25 +3,28 @@
 Server locale per **NVIDIA Jetson Orin Nano** che esegue modelli di intelligenza artificiale
 su file caricati da remoto, tutto in locale (nessun dato lascia il dispositivo).
 
-- **Pipeline YOLO ad albero** su video e immagini: ogni nodo è un tuo modello `.pt` di
-  **detection**, **segmentazione** o **classificazione**; i figli lavorano sui ritagli degli oggetti
-  trovati dal padre. Editor visuale per aggiungere, spostare, duplicare ed eliminare nodi.
-- **Ottimizzazione automatica per il Jetson**: ogni modello caricato viene ricompilato con
-  **TensorRT FP16** e viene mostrato il guadagno di velocità.
-- **Domande su PDF** con un LLM locale scelto da te (Ollama), anche su **PDF scansionati**
-  grazie all'OCR. Le risposte citano le pagine.
-- **Interfaccia web** utilizzabile da PC e telefono, **più utenti** con login.
-- **Coda dei lavori**: un lavoro pesante alla volta, con avanzamento e annullamento.
-- **Avvio automatico** all'accensione e **accesso da qualsiasi rete** tramite Tailscale.
-- **Plugin**: per aggiungere un nuovo compito basta un file Python.
+L'interfaccia ha due aree distinte:
+
+- **Lettore documenti**: carichi i PDF (anche scansionati, con OCR) e ci dialoghi come in un
+  chatbot, in stile NotebookLM. Le risposte arrivano in streaming, indicano le pagine con
+  riferimenti cliccabili e il documento si legge accanto alla chat. Per ogni documento puoi
+  tenere più conversazioni e ritrovarle in qualsiasi momento.
+- **Analisi video**: pipeline ad albero di modelli di visione (rilevamento, segmentazione,
+  classificazione) su video e immagini, con editor visuale. Ogni modello caricato viene
+  ottimizzato automaticamente con **TensorRT FP16** per il Jetson.
+
+Inoltre: interfaccia web per PC e telefono, **più utenti** con login, avvio automatico
+all'accensione, **accesso da qualsiasi rete** tramite Tailscale, **plugin** per aggiungere nuovi
+strumenti con un file Python. Tutto gira in locale: nessun dato lascia il dispositivo.
 
 ## Demo senza Jetson
 
 `demo/demo.html` è l'interfaccia vera con un finto server dentro il browser e dati di esempio
-(pipeline, modelli, lavori, risultati di una vera esecuzione). Si apre con un doppio clic, anche
-senza connessione, e niente viene salvato né inviato. Si può cliccare dappertutto: creare e
-modificare pipeline, caricare un file per avviare un lavoro, scaricare modelli, uscire ed entrare
-come utente senza permessi di amministratore (nome utente `mario`).
+(documenti con conversazioni, pipeline, modelli, risultati di una vera esecuzione). Si apre con un
+doppio clic, anche senza connessione, e niente viene salvato né inviato. Si può cliccare
+dappertutto: chattare con i documenti, caricare un PDF, creare e modificare pipeline, avviare
+un'analisi, scaricare modelli, uscire ed entrare come utente senza permessi di amministratore
+(nome utente `mario`).
 
 Dopo modifiche a `app/static/` si rigenera con `python demo/build.py`.
 
@@ -62,21 +65,51 @@ Jetson dalla console Tailscale) e crea loro un utente dalla pagina **Utenti**.
 
 ## Uso
 
-1. Accedi con il tuo utente.
-2. **Nuovo lavoro** → scegli il compito, carica il file e imposta i parametri.
-3. Segui l'avanzamento; al termine trovi risultati, anteprime e file da scaricare.
-4. Dal risultato puoi **rieseguire** sullo stesso file con altri parametri
-   (per i PDF: "Fai un'altra domanda", senza ricaricare né rileggere il documento).
+Dopo l'accesso la pagina iniziale propone le due aree. Gli amministratori hanno in più la
+pagina **Utenti**.
 
-### Modelli YOLO
+### Lettore documenti
 
-Dalla pagina **Modelli** gli amministratori caricano i file `.pt` addestrati con Ultralytics
+1. **Documenti** → carica uno o più PDF (trascinali nella pagina). L'elaborazione (lettura del
+   testo, OCR delle scansioni, indice per la ricerca) avviene in background con avanzamento. I
+   documenti restano in archivio.
+2. Apri un documento: a sinistra le **conversazioni** di quel documento, al centro la **chat**, a
+   destra il **documento** (pagine con ‹ ›). Scrivi una domanda e premi Invio.
+3. La risposta compare mentre viene scritta. I riferimenti **[p. 3]** sono pulsanti: aprono la
+   pagina nel visualizzatore. Per i documenti lunghi, «Fonti usate» mostra i passaggi su cui si
+   è basata la risposta. **Interrompi** ferma la risposta (quanto scritto resta salvato).
+4. Ogni conversazione ricorda le domande precedenti (puoi chiedere «e il canone?»). Puoi
+   crearne di nuove, **rinominarle** ed **eliminarle**; **Cronologia** raccoglie tutte le
+   conversazioni, con ricerca.
+
+Per i documenti lunghi la ricerca combina parole chiave e, se hai scelto un modello di embedding,
+somiglianza semantica; le richieste di riassunto usano parti distribuite lungo tutto il testo.
+Se cambi modello di embedding, «Reindicizza» aggiorna un documento già caricato.
+
+### Analisi video
+
+1. **Nuova analisi** → scegli la pipeline, carica il video o l'immagine, avvia.
+2. Segui l'avanzamento; al termine trovi il file annotato, le tabelle e i file da scaricare.
+   Dal risultato puoi **rieseguire** sullo stesso file con altri parametri.
+3. **Cronologia** raccoglie le analisi; **Pipeline** e **Modelli di visione** si gestiscono come
+   descritto sotto.
+
+### Un solo lavoro pesante alla volta
+
+Con 8 GB di memoria condivisa tra CPU e GPU, chat con i documenti, analisi video ed elaborazione
+dei documenti si mettono in fila (nell'ordine di arrivo) invece di competere per la memoria.
+Se stai chattando mentre gira un'analisi, la chat mostra «Il server sta eseguendo un'analisi
+video» e parte appena finisce. Con `JAS_CONCURRENT_AI=on` nel file `.env` la fila si disattiva.
+
+### Modelli di visione
+
+Da **Analisi video → Modelli di visione** gli amministratori caricano i file `.pt` addestrati con Ultralytics
 (YOLOv8, YOLO11, …) di tipo detection, segmentazione o classificazione. Tipo, classi e risoluzione
 di addestramento vengono letti dal file.
 
 Subito dopo il caricamento il server mette in coda l'**ottimizzazione**: ricompila il modello con
 TensorRT in FP16 per la GPU del Jetson (qualche minuto, una volta sola) e misura la velocità
-prima e dopo. Lo stato compare nella pagina Modelli ("da ottimizzare", "in ottimizzazione…",
+prima e dopo. Lo stato compare nella pagina ("da ottimizzare", "in ottimizzazione…",
 "⚡ TensorRT"). Finché non è pronto, il modello funziona comunque, solo più lento.
 
 - **Sostituisci**: carica una nuova versione del file mantenendo il nome; tutte le pipeline che
@@ -99,7 +132,7 @@ eseguito all'apertura, quindi carica solo modelli di cui ti fidi.
 
 ### Pipeline ad albero
 
-Dalla pagina **Pipeline** gli amministratori creano alberi di modelli (gli altri utenti possono
+Da **Analisi video → Pipeline** gli amministratori creano alberi di modelli (gli altri utenti possono
 solo vederli e usarli). Ogni nodo ha un modello e queste regole:
 
 | Dove si trova il nodo | Su cosa lavora |
@@ -118,7 +151,7 @@ del padre che lo attivano, margine del ritaglio) e usi **+ Figlio**, **+ Fratell
 sostituire il file di quello attuale. Le modifiche si applicano con **Salva**; se due persone
 modificano la stessa pipeline insieme, la seconda riceve un avviso invece di sovrascrivere.
 
-Per analizzare un video: **Nuovo lavoro → Analisi YOLO (pipeline)**, scegli la pipeline e carica
+Per analizzare un video: **Analisi video → Nuova analisi**, scegli la pipeline e carica
 il file. Ottieni il video annotato (un colore per nodo, uguale a quello dell'editor), una tabella
 per nodo e classe e un CSV in cui ogni riga ha `id` e `parent_id`, così sai a quale oggetto del
 padre appartiene ogni risultato. Il lavoro usa la pipeline com'era al momento dell'invio.
@@ -127,15 +160,15 @@ padre appartiene ogni risultato. Il lavoro usa la pipeline com'era al momento de
 
 L'installazione scarica **Qwen3-4B-Instruct-2507** (quantizzato Q4_K_M) e lo imposta come LLM in
 uso; per cambiarlo, modifica l'elenco `LLM_CANDIDATES` in `deploy/install.sh` oppure usa la pagina
-Modelli. Nessun modello YOLO viene scaricato. Nella pagina **Modelli**, sezione "Modelli linguistici",
-un amministratore:
+**Lettore documenti → Modelli linguistici**. Nessun modello di visione viene scaricato. Lì un
+amministratore:
 
 1. scarica i modelli scrivendo il nome esatto dalla libreria di [ollama.com](https://ollama.com/library)
    (es. `famiglia:3b`), con la barra di avanzamento;
 2. sceglie l'**LLM in uso**, l'**embedding in uso** (facoltativo) e la dimensione del **contesto**;
 3. elimina i modelli che non servono più.
 
-Finché non scegli un LLM, il compito "Domande su un documento PDF" resta disattivato.
+Finché non scegli un LLM, la chat con i documenti resta disattivata.
 
 **Parametri consigliati per il Jetson Orin Nano (8 GB, memoria condivisa con la GPU):**
 
@@ -148,13 +181,13 @@ Finché non scegli un LLM, il compito "Domande su un documento PDF" resta disatt
 
 Contesto: 4096 token vanno bene quasi sempre; 8192 se vuoi che documenti più lunghi vengano letti
 per intero (più memoria, più lento); 2048 è il più veloce. La pagina segnala i modelli scaricati
-che non rispettano questi parametri. Prima di ogni lavoro YOLO il server libera la memoria
+che non rispettano questi parametri. Prima di ogni analisi video il server libera la memoria
 dell'LLM, quindi i due non si contendono la RAM.
 
 ## Aggiungere un nuovo compito (plugin)
 
 Crea un file in `plugins/` (es. `plugins/mio_compito.py`) e riavvia il servizio: il compito compare
-da solo nell'interfaccia, con il modulo generato dai parametri. Esempio completo in
+da solo nella pagina iniziale, sotto «Altri strumenti», con il modulo generato dai parametri. Esempio completo in
 [`plugins/_esempio.py`](plugins/_esempio.py).
 
 ```python
@@ -191,9 +224,16 @@ Tutto ciò che fa l'interfaccia è disponibile via HTTP (documentazione interatt
 TOKEN=$(curl -s https://jetson.tailnet.ts.net/api/login -H 'content-type: application/json' \
   -d '{"username":"giacomo","password":"..."}' | jq -r .token)
 
+# analisi video
 curl -H "Authorization: Bearer $TOKEN" \
   -F task=yolo_pipeline -F 'params={"pipeline":"1"}' \
   -F file=@video.mp4 https://jetson.tailnet.ts.net/api/jobs
+
+# documenti: carica un PDF, crea una conversazione e fai una domanda (risposta in streaming, SSE)
+curl -H "Authorization: Bearer $TOKEN" -F file=@contratto.pdf https://jetson.tailnet.ts.net/api/documents
+curl -X POST -H "Authorization: Bearer $TOKEN" https://jetson.tailnet.ts.net/api/documents/1/conversations
+curl -N -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"content":"Quando scade il contratto?"}' https://jetson.tailnet.ts.net/api/conversations/1/messages
 ```
 
 ## Gestione

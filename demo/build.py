@@ -27,6 +27,19 @@ DEMO_CSS = """
 """
 
 
+# Stesso ordine di app/static/index.html (il finto server va caricato prima di tutti).
+UI_SCRIPTS = ["ui.js", "video.js", "docs.js", "app.js"]
+
+
+def pages_assets() -> dict[str, list[str]]:
+    """Pagine dei documenti di esempio: {"contratto": [pagina 1, pagina 2, ...], ...}."""
+    pages: dict[str, list[str]] = {}
+    for kind in sorted({f.name.rsplit("-", 1)[0] for f in (DEMO / "assets" / "pages").glob("*.jpg")}):
+        files = sorted((DEMO / "assets" / "pages").glob(f"{kind}-*.jpg"), key=lambda f: int(f.stem.rsplit("-", 1)[1]))
+        pages[kind] = [data_url(f, "image/jpeg") for f in files]
+    return pages
+
+
 def data_url(path: Path, mime: str) -> str:
     return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
 
@@ -38,7 +51,7 @@ def script(text: str) -> str:
 
 def build(fragment: bool) -> str:
     css = (STATIC / "style.css").read_text(encoding="utf-8") + DEMO_CSS
-    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    app_scripts = [(STATIC / name).read_text(encoding="utf-8") for name in UI_SCRIPTS]
     backend_js = (DEMO / "backend.js").read_text(encoding="utf-8")
     coco = json.loads((DEMO / "coco_classes.json").read_text(encoding="utf-8"))
     result = json.loads((DEMO / "real_result.json").read_text(encoding="utf-8"))
@@ -46,6 +59,7 @@ def build(fragment: bool) -> str:
         "video": data_url(DEMO / "assets" / "annotato.mp4", "video/mp4"),
         "video_webm": data_url(DEMO / "assets" / "annotato.webm", "video/webm"),
         "image": data_url(DEMO / "assets" / "annotata.jpg", "image/jpeg"),
+        "pages": pages_assets(),
     }
     data_js = (
         f"window.DEMO_ASSETS = {json.dumps(assets)};\n"
@@ -56,7 +70,7 @@ def build(fragment: bool) -> str:
         f"{BANNER}\n<div id=\"app\"></div>\n"
         f"<script>{script(data_js)}</script>\n"
         f"<script>{script(backend_js)}</script>\n"
-        f"<script>{script(app_js)}</script>\n"
+        + "".join(f"<script>{script(code)}</script>\n" for code in app_scripts)
     )
     if fragment:
         return f"<title>{TITLE}</title>\n<style>\n{css}\n</style>\n{body}"

@@ -303,7 +303,7 @@ class RerunIn(BaseModel):
 
 @app.post("/api/jobs/{job_id}/rerun")
 def rerun_job(job_id: str, body: RerunIn, user: dict = Depends(current_user)):
-    """Nuovo lavoro sullo stesso file con parametri diversi (es. un'altra domanda sul PDF)."""
+    """Nuova analisi sullo stesso file con parametri diversi (es. un'altra pipeline)."""
     old = _job_for(job_id, user)
     t = registry.get(old["task"])
     if not t or t.hidden:

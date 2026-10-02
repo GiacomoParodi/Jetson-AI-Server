@@ -80,27 +80,15 @@
   ];
   state.llm.llm_model = state.llm.installed[0].name;
 
-  const PDF_RESULT = {
-    summary: "Il contratto scade il **30 giugno 2028** (p. 1) e il canone mensile è di **750 euro** (p. 2), da pagare entro il 5 di ogni mese (p. 2).\n\n"
-      + "Alla scadenza si rinnova tacitamente per altri 4 anni, salvo disdetta con almeno 6 mesi di preavviso (p. 7).",
-    sources: [
-      { label: "Pagina 1", text: "CONTRATTO DI LOCAZIONE AD USO ABITATIVO. Il contratto ha durata di anni 4 (quattro) a decorrere dal 1° luglio 2024 e fino al 30 giugno 2028, salvo rinnovo come previsto dall'articolo 7." },
-      { label: "Pagina 2", text: "Il canone annuo di locazione è convenuto in euro 9.000,00, da pagarsi in rate mensili anticipate di euro 750,00 ciascuna, entro il giorno 5 di ogni mese." },
-      { label: "Pagina 7", text: "Alla prima scadenza il contratto è rinnovato per un periodo di quattro anni, salvo disdetta da comunicare con lettera raccomandata almeno sei mesi prima della scadenza." },
-    ],
-    outputs: [{ file: "testo_estratto.txt", kind: "file", label: "Testo estratto dal PDF" }],
-    notes: ["Nessun modello di embedding scelto: ricerca solo per parole chiave."],
-    meta: { pages: 14, ocr_pages: 3, model: state.llm.llm_model },
-  };
-
   const OPT_RESULT = {
     summary: "**scrivanie_v3.pt** è ottimizzato con TensorRT FP16: **3.4x** più veloce (41.2 → 12.1 ms per immagine).",
     table: { columns: ["Versione", "ms per immagine", "Immagini al secondo"], rows: [["Originale (PyTorch)", 41.2, "24.3"], ["Ottimizzata (TensorRT FP16)", 12.1, "82.6"]] },
     notes: ["Risoluzione di ingresso: 640 px (quella dell'addestramento)."],
   };
 
-  const TASK_TITLES = { yolo_pipeline: "Analisi YOLO (pipeline)", pdf_qa: "Domande su un documento PDF", optimize_model: "Ottimizzazione modello (TensorRT)" };
-  const RERUN = { yolo_pipeline: "Riesegui con altri parametri", pdf_qa: "Fai un'altra domanda", optimize_model: null };
+  const TASK_TITLES = { yolo_pipeline: "Analisi video", optimize_model: "Ottimizzazione modello" };
+  const RERUN = { yolo_pipeline: "Riesegui con altri parametri", optimize_model: null };
+  const SECTION = { yolo_pipeline: "video", optimize_model: "video" };
 
   function seedJob(id, task, user, input, params, ago, dur, status, extra = {}) {
     return {
@@ -114,8 +102,6 @@
   state.jobs = [
     seedJob("demo-video", "yolo_pipeline", "giacomo", "piazza_mattina.mp4",
       { pipeline: "1", track: true, frame_step: 1, _pipeline: snap(state.pipelines[0]) }, 1500, 16, "done", { result: clone(REAL) }),
-    seedJob("demo-pdf", "pdf_qa", "giacomo", "contratto_locazione.pdf",
-      { question: "Quando scade il contratto e quanto è il canone?", ocr: "automatica" }, 7200, 41, "done", { result: clone(PDF_RESULT) }),
     seedJob("demo-opt", "optimize_model", "giacomo", null, { model: "scrivanie_v3.pt" }, 86400 * 3 + 700, 318, "done", { result: clone(OPT_RESULT) }),
     seedJob("demo-fail", "yolo_pipeline", "elena", "registrazione_corrotta.avi",
       { pipeline: "2", track: true, frame_step: 2, _pipeline: snap(state.pipelines[1]) }, 86400, 1, "failed",
@@ -130,11 +116,6 @@
   // ------------------------------------------------------------------ lavori
 
   function jobMessage(job, frac) {
-    if (job.task === "pdf_qa") {
-      if (frac < 0.5) return `Lettura della pagina ${Math.max(1, Math.round(frac * 28))} di 14…`;
-      if (frac < 0.65) return "Indicizzazione del documento…";
-      return "Il modello sta scrivendo la risposta…";
-    }
     if (frac < 0.06) return "Caricamento dei modelli…";
     return `Frame ${Math.min(45, Math.round(frac * 45))} di 45`;
   }
@@ -162,6 +143,7 @@
     const out = { ...job };
     delete out.sim;
     out.task_title = TASK_TITLES[job.task] || job.task;
+    out.section = SECTION[job.task] || "";
     out.rerun_label = RERUN[job.task] || null;
     out.queue_position = job.status === "queued" ? 0 : null;
     return out;
@@ -174,17 +156,6 @@
   }
 
   function fail(status, detail) { return [status, { detail }]; }
-
-  function pdfResultFor(question) {
-    return {
-      summary: "**Risposta di esempio.** Sul Jetson qui compare la risposta scritta da Qwen3-4B-Instruct-2507 leggendo il tuo PDF, con le pagine citate.\n\n"
-        + `La tua domanda era: «${question}»`,
-      sources: [],
-      outputs: [{ file: "testo_estratto.txt", kind: "file", label: "Testo estratto dal PDF" }],
-      notes: ["Demo: in questa anteprima la risposta non viene calcolata davvero."],
-      meta: { pages: 14, ocr_pages: 0, model: state.llm.llm_model || "—" },
-    };
-  }
 
   function pipelineResultFor(p, ext) {
     const r = clone(REAL);
@@ -203,7 +174,7 @@
     if (!t || task === "optimize_model") return fail(404, "Compito sconosciuto");
     const clean = {};
     let result;
-    if (task === "yolo_pipeline") {
+    {
       const p = state.pipelines.find((x) => String(x.id) === String(params.pipeline));
       if (!params.pipeline) return fail(400, "Il campo 'Pipeline' è obbligatorio");
       if (!p) return fail(400, `Valore non valido per 'Pipeline': ${params.pipeline}`);
@@ -211,19 +182,13 @@
       const step = Math.min(30, Math.max(1, Number(params.frame_step) || 1));
       Object.assign(clean, { pipeline: String(p.id), track: params.track === undefined ? true : !!params.track, frame_step: step, _pipeline: snap(p) });
       result = pipelineResultFor(p, inputName);
-    } else {
-      const q = String(params.question || "").trim();
-      if (!q) return fail(400, "Il campo 'Domanda' è obbligatorio");
-      const ocr = ["automatica", "sempre", "mai"].includes(params.ocr) ? params.ocr : "automatica";
-      Object.assign(clean, { question: q, ocr });
-      result = pdfResultFor(q);
     }
     const now = Date.now() / 1000;
     const job = {
       id: `demo-${now.toString(36)}-${state.nextJob++}`, task, username: state.me.username, input_name: inputName,
       params: clean, status: "queued", progress: 0, message: "", result: null, error: null,
       created_at: now, started_at: null, finished_at: null,
-      sim: { t0: now, queued: 2, run: task === "pdf_qa" ? 9 : 14, result },
+      sim: { t0: now, queued: 2, run: 14, result },
     };
     state.jobs.unshift(job);
     return [200, jobOut(job)];
@@ -353,6 +318,7 @@
       gpu_percent: Math.round(running ? 74 + wave(5, 12) + Math.random() * 5 : 2 + Math.random() * 3),
       temperatures: { "cpu-thermal": Math.round((running ? 61 : 47) + wave(40, 2)), "gpu-thermal": Math.round((running ? 63 : 46) + wave(36, 2)) },
       version: "0.1.0", queued: jobs.filter((j) => j.status === "queued").length, running,
+      busy_with: running ? "un'analisi video" : null, waiting: 0,
       ollama: { running: true, models: state.llm.installed.map((m) => m.name), llm_model: state.llm.llm_model, embed_model: state.llm.embed_model },
       cuda: true, tensorrt: "10.3.0",
     };
@@ -365,27 +331,306 @@
     const P = (o) => ({ default: null, required: false, help: "", choices: null, min: null, max: null, step: null, ...o });
     return [
       {
-        id: "pdf_qa", title: TASK_TITLES.pdf_qa, accept: [".pdf"], needs_file: true, hidden: false, available: true, unavailable_reason: "",
-        description: "Carica un PDF (anche scansionato) e fai una domanda: un modello linguistico locale risponde basandosi sul contenuto e cita le pagine. Il documento non lascia il server.",
-        params: [
-          P({ name: "question", label: "Domanda", type: "textarea", required: true, help: "Es. 'Qual è la scadenza del contratto?' oppure 'Riassumi il documento'" }),
-          P({ name: "ocr", label: "Lettura del testo (OCR)", type: "select", default: "automatica", choices: ["automatica", "sempre", "mai"], help: "Automatica: usa l'OCR solo sulle pagine senza testo (scansioni)" }),
-        ],
-        rerun_label: RERUN.pdf_qa,
-      },
-      {
-        id: "yolo_pipeline", title: TASK_TITLES.yolo_pipeline, hidden: false, needs_file: true,
-        available: choices.length > 0, unavailable_reason: choices.length ? "" : "Nessuna pipeline pronta: un amministratore deve crearne una nella pagina Pipeline",
-        description: "Esegue un albero di modelli YOLO (detection, segmentazione, classificazione) su un video o un'immagine. Restituisce il file annotato, i conteggi per nodo e un CSV con tutti i risultati.",
+        id: "yolo_pipeline", title: TASK_TITLES.yolo_pipeline, section: "video", hidden: false, needs_file: true,
+        available: choices.length > 0, unavailable_reason: choices.length ? "" : "Nessuna pipeline pronta: un amministratore deve crearne una nella sezione Pipeline",
+        description: "Esegue una pipeline di modelli di visione (rilevamento, segmentazione, classificazione) su un video o un'immagine. Restituisce il file annotato, i conteggi per fase e un CSV con tutti i risultati.",
         accept: [".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".jpg", ".jpeg", ".png", ".bmp", ".webp"],
         params: [
-          P({ name: "pipeline", label: "Pipeline", type: "select", required: true, choices, help: "Gli amministratori creano e modificano le pipeline nella pagina Pipeline" }),
+          P({ name: "pipeline", label: "Pipeline", type: "select", required: true, choices, help: "Gli amministratori creano e modificano le pipeline nella sezione Pipeline" }),
           P({ name: "track", label: "Conta gli oggetti unici (tracking)", type: "bool", default: true, help: "Solo video, per i nodi radice di detection/segmentazione" }),
           P({ name: "frame_step", label: "Analizza un frame ogni", type: "number", default: 1, min: 1, max: 30, step: 1, help: "Valori più alti = più veloce ma meno fluido (es. 3 = un frame su tre)" }),
         ],
         rerun_label: RERUN.yolo_pipeline,
       },
     ];
+  }
+
+  // ------------------------------------------------------------------ lettore documenti: dati di esempio
+
+  const DEFAULT_TITLE = "Nuova conversazione";
+  const ago = (seconds) => NOW - seconds;
+
+  /** Pagina segnaposto per i documenti caricati nella demo (di cui non si può mostrare il contenuto). */
+  const placeholderCache = {};
+  function placeholderPage(title, n, total) {
+    const key = `${title}|${n}`;
+    if (placeholderCache[key]) return placeholderCache[key];
+    const c = document.createElement("canvas");
+    c.width = 760; c.height = 1075;
+    const g = c.getContext("2d");
+    g.fillStyle = "#ffffff"; g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = "#14213d"; g.font = "bold 26px system-ui, sans-serif"; g.fillText(String(title).slice(0, 42), 70, 110);
+    g.fillStyle = "#d9dde6";
+    for (let i = 0; i < 22; i++) g.fillRect(70, 170 + i * 30, i % 5 === 4 ? 360 : 620, 10);
+    g.fillStyle = "#6b7280"; g.font = "18px system-ui, sans-serif";
+    g.fillText("Anteprima non disponibile nella demo", 70, 900);
+    g.fillText(`Pagina ${n} di ${total}`, 70, 930);
+    return (placeholderCache[key] = c.toDataURL("image/jpeg", 0.7));
+  }
+  function pageImage(doc, n) {
+    const set = ASSETS.pages && ASSETS.pages[doc.kind];
+    return (set && set[n - 1]) || placeholderPage(doc.title, n, doc.pages);
+  }
+
+  const doc = (id, user, title, filename, kind, pages, extra = {}) => ({
+    id, user, title, filename, kind, pages, size_bytes: pages * 52000, ocr_pages: 0, status: "ready", error: null,
+    notes: [], embed_model: null, created_at: ago(86400 * 2), updated_at: ago(86400 * 2), ...extra,
+  });
+
+  state.documents = [
+    doc(1, "giacomo", "Contratto di locazione", "contratto_locazione.pdf", "contratto", 4, { created_at: ago(86400 * 3) }),
+    doc(2, "giacomo", "Manuale di sicurezza sul lavoro", "manuale_sicurezza_ed3.pdf", "manuale", 24, { created_at: ago(86400 * 2), size_bytes: 3400000 }),
+    doc(3, "giacomo", "Relazione trimestrale Q3", "relazione_q3.pdf", "relazione", 3, { created_at: ago(7200) }),
+    doc(4, "giacomo", "Verbale riunione (scansione)", "verbale_scansionato.pdf", "generico", 5, {
+      created_at: ago(8), status: "processing", size_bytes: 6528461,
+      sim: { t0: NOW - 8, run: 50, pages: 5, ocr: 5 },
+    }),
+    doc(5, "mario", "Capitolato d'appalto", "capitolato.pdf", "generico", 12, { created_at: ago(86400 * 4) }),
+  ];
+  state.convs = [];
+  state.messages = {};
+  state.nextDoc = 6; state.nextConv = 1; state.nextMsg = 1;
+
+  const docOf = (id) => state.documents.find((d) => d.id === id);
+
+  function addMessage(convId, role, content, sources = [], model = null, status = "ok", at = Date.now() / 1000) {
+    const msg = { id: state.nextMsg++, conversation_id: convId, role, content, sources, model, status, created_at: at };
+    (state.messages[convId] = state.messages[convId] || []).push(msg);
+    const conv = state.convs.find((c) => c.id === convId);
+    if (conv) conv.updated_at = at;
+    return msg;
+  }
+
+  // ---- risposte di esempio: poche domande tipiche per ogni documento, il resto riceve una risposta generica
+  const SRC = {
+    c1: { page: 1, text: "Il contratto ha durata di anni 4 (quattro), a decorrere dal 1° luglio 2024 e fino al 30 giugno 2028, salvo rinnovo come previsto dall'articolo 7." },
+    c2: { page: 2, text: "Il canone annuo di locazione è convenuto in euro 9.000,00, da pagarsi in rate mensili anticipate di euro 750,00 ciascuna, entro il giorno 5 di ogni mese." },
+    m2: { page: 2, text: "I dispositivi di protezione individuale (DPI) sono obbligatori nelle aree indicate dalla segnaletica. Reparto presse: elmetto, occhiali, guanti antitaglio, scarpe S3." },
+    m2b: { page: 2, text: "I DPI vengono controllati ogni trimestre dal preposto. Il lavoratore che riscontra un difetto lo segnala subito e ritira un dispositivo sostitutivo presso il magazzino sicurezza." },
+    m3: { page: 3, text: "Ogni lavoratore riceve una formazione generale di 4 ore e una formazione specifica di 8 ore prima di accedere al reparto assegnato. L'aggiornamento è di 6 ore ogni cinque anni." },
+    m4: { page: 4, text: "Al segnale di allarme interrompere le attività, mettere in sicurezza le macchine e raggiungere il punto di raccolta indicato nelle planimetrie, senza usare gli ascensori." },
+    m4b: { page: 4, text: "In caso di infortunio chiamare il 112 e avvisare l'addetto al primo soccorso del turno. Le cassette di medicazione si trovano in ogni reparto." },
+    m5: { page: 5, text: "Ogni infortunio, anche lieve, e ogni quasi incidente vanno segnalati al preposto entro la fine del turno, compilando il modulo MS-12." },
+  };
+
+  const ANSWERS = {
+    contratto: [
+      [/riassum|sintesi|punti principali|di cosa|principali/i, () => ({
+        text: "Il documento è un **contratto di locazione ad uso abitativo** tra Mario Rossi (Locatore) ed Elena Bianchi (Conduttore). In sintesi:\n\n"
+          + "- **Oggetto:** appartamento di tre vani in via Roma 12, Milano, con cantina [p. 1]\n"
+          + "- **Durata:** 4 anni, dal 1° luglio 2024 al 30 giugno 2028 [p. 1]\n"
+          + "- **Canone:** 750 € al mese, da pagare entro il 5 di ogni mese [p. 2]\n"
+          + "- **Deposito cauzionale:** tre mensilità [p. 2]\n"
+          + "- **Manutenzione:** ordinaria al Conduttore, straordinaria al Locatore [p. 3]\n"
+          + "- **Rinnovo:** per altri 4 anni, salvo disdetta con sei mesi di preavviso [p. 4]", sources: [] })],
+      [/scad|durata|quando (finisce|termina)|fino a/i, () => ({
+        text: "Il contratto scade il **30 giugno 2028** [p. 1]. Ha durata di quattro anni, a partire dal 1° luglio 2024 [p. 1].\n\n"
+          + "Alla scadenza si rinnova automaticamente per altri quattro anni, a meno che una delle parti invii la disdetta con almeno sei mesi di preavviso [p. 4].", sources: [] })],
+      [/canone|affitto|pagament|quanto|costo|import/i, () => ({
+        text: "Il canone è di **750 € al mese**, pari a 9.000 € all'anno, da pagare entro il giorno 5 di ogni mese con bonifico bancario [p. 2].\n\n"
+          + "| Voce | Importo | Scadenza |\n|---|---|---|\n| Canone mensile | 750,00 € | entro il 5 di ogni mese |\n"
+          + "| Spese condominiali (acconto) | 60,00 € | con il canone |\n| Deposito cauzionale | 2.250,00 € | alla firma |\n\n"
+          + "Dal secondo anno il canone si aggiorna al 75% della variazione ISTAT [p. 2].", sources: [] })],
+      [/disdett|preavviso|rinnov|recede|recesso/i, () => ({
+        text: "- La **disdetta** va inviata con lettera raccomandata con ricevuta di ritorno almeno **sei mesi prima** della scadenza [p. 4]\n"
+          + "- Se nessuna delle parti disdice, il contratto si **rinnova per altri quattro anni** [p. 4]\n"
+          + "- Il Conduttore può recedere in qualsiasi momento, per gravi motivi, con preavviso di sei mesi [p. 1]", sources: [] })],
+      [/deposit|cauzion/i, () => ({
+        text: "Il deposito cauzionale è pari a **tre mensilità**, cioè 2.250 € [p. 2]. Viene restituito alla riconsegna dell'immobile, dedotti eventuali danni accertati [p. 2].", sources: [] })],
+      [/manutenzion|riparaz|guast/i, () => ({
+        text: "- **Manutenzione ordinaria** (piccole riparazioni, caldaia, serramenti): a carico del Conduttore [p. 3]\n"
+          + "- **Manutenzione straordinaria**: a carico del Locatore, salvo che derivi da incuria del Conduttore [p. 3]\n"
+          + "- I guasti che richiedono interventi straordinari vanno segnalati per iscritto [p. 3]", sources: [] })],
+    ],
+    manuale: [
+      [/riassum|sintesi|punti principali|di cosa|principali/i, () => ({
+        text: "Il manuale raccoglie le regole di sicurezza dello stabilimento di Bologna. I temi principali sono:\n\n"
+          + "- **Responsabilità** di datore di lavoro, RSPP, preposti e lavoratori [p. 1]\n- **DPI** obbligatori per ogni area [p. 2]\n"
+          + "- **Formazione:** 4 ore generali, 8 specifiche, aggiornamento ogni 5 anni [p. 3]\n- **Emergenze** e primo soccorso [p. 4]\n"
+          + "- **Segnalazione** di infortuni e quasi incidenti [p. 5]",
+        sources: [{ page: 1, text: "Il presente manuale raccoglie le regole di sicurezza che tutto il personale è tenuto a rispettare nelle aree produttive e di magazzino." }, SRC.m2, SRC.m3, SRC.m4, SRC.m5],
+        notes: ["Documento lungo: il riassunto si basa su una selezione di parti distribuite lungo il documento."] })],
+      [/dpi|protezion|presse|elmett|guanti|verniciatura/i, () => ({
+        text: "Nel **reparto presse** servono elmetto, occhiali, guanti antitaglio e scarpe S3 [p. 2]. Negli altri reparti:\n\n"
+          + "| Area | DPI obbligatori |\n|---|---|\n| Magazzino | Scarpe antinfortunistiche, giubbotto alta visibilità |\n| Verniciatura | Mascherina FFP3, tuta, guanti in nitrile |\n| Uffici tecnici | Nessuno (elmetto per accedere alle aree produttive) |\n\n"
+          + "I DPI vengono controllati ogni trimestre dal preposto [p. 2].", sources: [SRC.m2, SRC.m2b] })],
+      [/formazion|ore|aggiorn|neoassunt/i, () => ({
+        text: "Prima di accedere al reparto ogni lavoratore riceve **4 ore** di formazione generale e **8 ore** di formazione specifica. L'aggiornamento è di **6 ore ogni cinque anni** [p. 3].", sources: [SRC.m3] })],
+      [/emergen|evacua|incend|soccors|allarme/i, () => ({
+        text: "Al segnale di allarme si interrompono le attività, si mettono in sicurezza le macchine e si raggiunge il punto di raccolta senza usare gli ascensori [p. 4]:\n\n"
+          + "- **Punto A:** piazzale nord (presse e verniciatura)\n- **Punto B:** parcheggio visitatori (uffici e magazzino)\n\n"
+          + "In caso di infortunio chiamare il **112** e avvisare l'addetto al primo soccorso [p. 4].", sources: [SRC.m4, SRC.m4b] })],
+      [/infortun|incident|segnal|modulo/i, () => ({
+        text: "Ogni infortunio, anche lieve, e ogni quasi incidente vanno segnalati al preposto **entro la fine del turno** con il modulo **MS-12** [p. 5].", sources: [SRC.m5] })],
+    ],
+    relazione: [
+      [/ricavi|fatturato|margine|risultat|andamento/i, () => ({
+        text: "Il terzo trimestre chiude con ricavi di **4,82 milioni di euro**, in crescita del 6,4% [p. 1].\n\n"
+          + "| Indicatore | Q3 | Q3 anno prec. | Variazione |\n|---|---|---|---|\n| Ricavi | 4,82 M€ | 4,53 M€ | +6,4% |\n| Margine operativo lordo | 0,88 M€ | 0,76 M€ | +15,8% |\n| Costi del personale | 1,64 M€ | 1,58 M€ | +3,8% |", sources: [] })],
+      [/previsi|obiettiv|quarto|futuro|investiment/i, () => ({
+        text: "Per il quarto trimestre si prevedono ricavi tra **5,0 e 5,3 milioni di euro** e l'obiettivo annuo di **18,9 milioni** è confermato [p. 3]. Gli investimenti previsti sono 1,2 milioni, per il 60% in nuove linee di collaudo [p. 3].", sources: [] })],
+    ],
+  };
+
+  function compose(d, question) {
+    for (const [re, make] of ANSWERS[d.kind] || []) {
+      if (re.test(question)) return { notes: [], ...make() };
+    }
+    const known = ANSWERS[d.kind];
+    return {
+      text: known
+        ? `Negli estratti del documento non trovo un'indicazione precisa su questo punto. Prova a chiedermi di ${d.kind === "contratto" ? "durata, canone, deposito, manutenzione o disdetta" : d.kind === "manuale" ? "DPI, formazione, emergenze o segnalazione degli infortuni" : "ricavi, margini o previsioni"}.`
+        : `**Risposta di esempio.** Sul Jetson qui compare la risposta scritta dal modello linguistico scelto, leggendo il tuo documento e citando le pagine da cui prende le informazioni [p. 1].\n\nLa tua domanda era: «${question}»`,
+      sources: [], notes: [],
+    };
+  }
+
+  function seedConversation(docId, user, title, secondsAgo, questions) {
+    const d = docOf(docId);
+    const id = state.nextConv++;
+    state.convs.push({ id, document_id: docId, user, title, created_at: ago(secondsAgo), updated_at: ago(secondsAgo) });
+    let t = ago(secondsAgo);
+    for (const q of questions) {
+      const ans = compose(d, q);
+      addMessage(id, "user", q, [], null, "ok", t);
+      addMessage(id, "assistant", ans.text, ans.sources, state.llm.llm_model, "ok", (t += 9));
+      t += 40;
+    }
+    return id;
+  }
+  seedConversation(1, "giacomo", "Scadenza e canone del contratto", 5400, ["Quando scade il contratto?", "E il canone mensile?"]);
+  seedConversation(1, "giacomo", "Come si fa la disdetta", 86400 * 2, ["Come funziona la disdetta?"]);
+  seedConversation(2, "giacomo", "Quali DPI nel reparto presse", 86400, ["Quali DPI servono nel reparto presse?"]);
+  seedConversation(5, "mario", "Riassunto del capitolato", 3600, ["Riassumi il documento"]);
+
+  // ---- elaborazione simulata dei documenti
+  function settleDoc(d) {
+    if (!d.sim) return d;
+    const el = Date.now() / 1000 - d.sim.t0;
+    if (el >= d.sim.run) {
+      Object.assign(d, { status: "ready", error: null, pages: d.sim.pages ?? d.pages, ocr_pages: d.sim.ocr ?? d.ocr_pages, updated_at: Date.now() / 1000 });
+      delete d.progress; delete d.message; d.sim = null;
+    } else {
+      const frac = el / d.sim.run;
+      d.status = "processing";
+      d.progress = Math.min(0.97, frac);
+      d.message = frac > 0.85 ? "Indicizzazione del documento…"
+        : `${d.sim.ocr ? "Lettura con OCR" : "Lettura"} della pagina ${Math.max(1, Math.min(d.pages, Math.ceil((frac / 0.85) * d.pages)))} di ${d.pages}…`;
+    }
+    return d;
+  }
+
+  function convsOf(docId, user) {
+    return state.convs.filter((c) => (state.messages[c.id] || []).length
+      && (docId == null || c.document_id === docId) && (user === null || c.user === user));
+  }
+
+  function docOut(d) {
+    settleDoc(d);
+    const convs = convsOf(d.id, d.user);
+    const out = {
+      id: d.id, title: d.title, filename: d.filename, size_bytes: d.size_bytes, pages: d.pages, ocr_pages: d.ocr_pages,
+      status: d.status, error: d.error, notes: d.notes, embed_model: d.embed_model, created_at: d.created_at, updated_at: d.updated_at,
+      username: d.user, conversation_count: convs.length,
+      last_activity: convs.length ? Math.max(...convs.map((c) => c.updated_at)) : null,
+      semantic: false, semantic_outdated: false,
+    };
+    if (d.status === "processing") { out.progress = d.progress || 0; out.message = d.message || "In coda"; }
+    return out;
+  }
+
+  function convOut(c) {
+    const d = docOf(c.document_id);
+    const msgs = state.messages[c.id] || [];
+    const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+    return { id: c.id, document_id: c.document_id, document_title: d ? d.title : "", title: c.title, created_at: c.created_at,
+      updated_at: c.updated_at, message_count: msgs.length, last_question: lastUser ? lastUser.content : null, username: c.user };
+  }
+
+  const visibleDoc = (id) => {
+    const d = docOf(id);
+    return d && (d.user === state.me.username || state.me.is_admin) ? d : null;
+  };
+  const visibleConv = (id) => {
+    const c = state.convs.find((x) => x.id === id);
+    return c && (c.user === state.me.username || state.me.is_admin) ? c : null;
+  };
+
+  function titleFrom(q) {
+    const t = q.split(/\s+/).join(" ");
+    return t.length <= 60 ? t : (t.slice(0, 60).replace(/\s+\S*$/, "") || t.slice(0, 60)) + "…";
+  }
+
+  async function createDocument(file) {
+    if (!file || !file.name || !/\.pdf$/i.test(file.name)) return fail(400, "Carica un file PDF");
+    let pages = 0;
+    try { pages = ((await file.slice(0, 6e6).text()).match(/\/Type\s*\/Page[^s]/g) || []).length; } catch { /* resta il valore stimato */ }
+    pages = pages || 6;
+    const d = doc(state.nextDoc++, state.me.username, file.name.replace(/\.pdf$/i, "").slice(0, 120), file.name, "generico", pages, {
+      created_at: Date.now() / 1000, size_bytes: file.size || pages * 52000, status: "processing",
+      sim: { t0: Date.now() / 1000, run: 6 + Math.min(10, pages * 0.4), pages, ocr: 0 },
+    });
+    state.documents.unshift(d);
+    return [200, docOut(d)];
+  }
+
+  function anyJobRunning() { return state.jobs.some((j) => settle(j).status === "running"); }
+
+  /** Risposta in streaming: stessi eventi del server vero (user_message, status, sources, token, done, error). */
+  function streamMessage(convId, text, signal) {
+    const conv = visibleConv(convId);
+    if (!conv) return new Response(JSON.stringify({ detail: "Conversazione non trovata" }), { status: 404 });
+    const d = docOf(conv.document_id);
+    text = String(text || "").trim();
+    if (!text) return new Response(JSON.stringify({ detail: "Scrivi una domanda" }), { status: 400 });
+    if (!d || settleDoc(d).status !== "ready") {
+      return new Response(JSON.stringify({ detail: "Il documento non è ancora pronto: attendi la fine dell'elaborazione" }), { status: 409 });
+    }
+    const enc = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        let closed = false;
+        const send = (ev) => { if (!closed) { try { controller.enqueue(enc.encode(`data: ${JSON.stringify(ev)}\n\n`)); } catch { closed = true; } } };
+        const aborted = () => !!(signal && signal.aborted);
+        if (signal) signal.addEventListener("abort", () => { closed = true; try { controller.error(new DOMException("Aborted", "AbortError")); } catch { /* già chiuso */ } });
+        let partial = "", sources = [];
+        try {
+          if (!state.llm.llm_model) {
+            send({ type: "error", detail: "Nessun modello linguistico scelto: un amministratore deve sceglierlo nella pagina Modelli linguistici." });
+            return;
+          }
+          const past = state.messages[conv.id] || [];
+          const userMsg = addMessage(conv.id, "user", text);
+          if (conv.title === DEFAULT_TITLE && !past.length) conv.title = titleFrom(text);
+          send({ type: "user_message", message: userMsg, title: conv.title });
+          if (anyJobRunning()) {
+            send({ type: "status", state: "waiting", text: "Il server sta eseguendo un'analisi video: la risposta parte appena finisce." });
+            await delay(2200);
+          }
+          if (aborted()) return;
+          send({ type: "status", state: "searching", text: "Ricerca nel documento…" });
+          await delay(550);
+          const ans = compose(d, text);
+          sources = ans.sources;
+          send({ type: "sources", sources, notes: ans.notes });
+          send({ type: "status", state: "writing", text: "Scrittura della risposta…" });
+          await delay(450);
+          for (const piece of ans.text.match(/\S+\s*/g) || []) {
+            if (aborted()) return;
+            await delay(24);
+            partial += piece;
+            send({ type: "token", text: piece });
+          }
+          send({ type: "done", message: addMessage(conv.id, "assistant", ans.text, sources, state.llm.llm_model) });
+        } catch (e) {
+          send({ type: "error", detail: String((e && e.message) || e) });
+        } finally {
+          if (aborted() && partial.trim()) addMessage(conv.id, "assistant", partial.trim(), sources, state.llm.llm_model, "stopped");
+          try { controller.close(); } catch { /* già chiuso */ }
+        }
+      },
+    });
+    return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
   }
 
   // ------------------------------------------------------------------ router
@@ -452,7 +697,9 @@
     if (path === "/api/tasks" && method === "GET") return [200, tasksOut()];
     if (path === "/api/jobs" && method === "GET") {
       const all = u.searchParams.get("all") === "true" && state.me.is_admin;
-      const list = state.jobs.filter((j) => all || j.username === state.me.username).map(jobOut);
+      const section = u.searchParams.get("section");
+      const list = state.jobs.filter((j) => (all || j.username === state.me.username)
+        && (section === null || (SECTION[j.task] === section && j.task !== "optimize_model"))).map(jobOut);
       return [200, list.sort((a, b) => b.created_at - a.created_at)];
     }
     if ((m = path.match(/^\/api\/jobs\/([^/]+)$/))) {
@@ -552,6 +799,84 @@
       }
     }
 
+    // panoramica
+    if (path === "/api/overview" && method === "GET") {
+      const mine = state.jobs.filter((j) => j.username === state.me.username && SECTION[j.task] === "video" && j.task !== "optimize_model").map(settle);
+      const docs = state.documents.filter((d) => d.user === state.me.username).map(settleDoc);
+      return [200, {
+        documents: { count: docs.length, processing: docs.filter((d) => d.status === "processing").length,
+          conversations: convsOf(null, state.me.username).length, llm: state.llm.llm_model },
+        video: { analyses: mine.length, active: mine.filter((j) => ["queued", "running"].includes(j.status)).length,
+          pipelines: state.pipelines.length, models: state.models.length },
+        other_tools: [],
+      }];
+    }
+
+    // documenti e conversazioni
+    if (path === "/api/documents" && method === "GET") {
+      const all = u.searchParams.get("all") === "true" && state.me.is_admin;
+      return [200, state.documents.filter((d) => all || d.user === state.me.username).map(docOut)
+        .sort((x, y) => y.created_at - x.created_at)];
+    }
+    if ((m = path.match(/^\/api\/documents\/(\d+)$/))) {
+      const d = visibleDoc(Number(m[1]));
+      if (!d) return fail(404, "Documento non trovato");
+      if (method === "GET") return [200, docOut(d)];
+      if (method === "PATCH") {
+        const title = String(body(init).title || "").split(/\s+/).join(" ").slice(0, 120);
+        if (!title) return fail(400, "Il nome non può essere vuoto");
+        d.title = title;
+        return [200, docOut(d)];
+      }
+      if (method === "DELETE") {
+        const ids = state.convs.filter((c) => c.document_id === d.id).map((c) => c.id);
+        state.convs = state.convs.filter((c) => c.document_id !== d.id);
+        ids.forEach((id) => delete state.messages[id]);
+        state.documents = state.documents.filter((x) => x !== d);
+        return [200, { ok: true }];
+      }
+    }
+    if ((m = path.match(/^\/api\/documents\/(\d+)\/reindex$/)) && method === "POST") {
+      const d = visibleDoc(Number(m[1]));
+      if (!d) return fail(404, "Documento non trovato");
+      if (settleDoc(d).status === "processing") return fail(400, "Il documento è già in elaborazione");
+      Object.assign(d, { status: "processing", error: null, sim: { t0: Date.now() / 1000, run: 6, pages: d.pages, ocr: d.ocr_pages } });
+      return [200, docOut(d)];
+    }
+    if ((m = path.match(/^\/api\/documents\/(\d+)\/conversations$/))) {
+      const d = visibleDoc(Number(m[1]));
+      if (!d) return fail(404, "Documento non trovato");
+      if (method === "GET") {
+        return [200, convsOf(d.id, state.me.is_admin ? null : state.me.username).map(convOut).sort((a, b) => b.updated_at - a.updated_at)];
+      }
+      if (method === "POST") {
+        const now = Date.now() / 1000;
+        const c = { id: state.nextConv++, document_id: d.id, user: state.me.username, title: DEFAULT_TITLE, created_at: now, updated_at: now };
+        state.convs.push(c);
+        return [200, convOut(c)];
+      }
+    }
+    if (path === "/api/conversations" && method === "GET") {
+      const all = u.searchParams.get("all") === "true" && state.me.is_admin;
+      return [200, convsOf(null, all ? null : state.me.username).map(convOut).sort((a, b) => b.updated_at - a.updated_at)];
+    }
+    if ((m = path.match(/^\/api\/conversations\/(\d+)$/))) {
+      const c = visibleConv(Number(m[1]));
+      if (!c) return fail(404, "Conversazione non trovata");
+      if (method === "GET") return [200, { ...convOut(c), messages: clone(state.messages[c.id] || []) }];
+      if (method === "PATCH") {
+        const title = String(body(init).title || "").split(/\s+/).join(" ").slice(0, 120);
+        if (!title) return fail(400, "Il titolo non può essere vuoto");
+        c.title = title;
+        return [200, convOut(c)];
+      }
+      if (method === "DELETE") {
+        state.convs = state.convs.filter((x) => x !== c);
+        delete state.messages[c.id];
+        return [200, { ok: true }];
+      }
+    }
+
     // LLM (Ollama)
     if (path === "/api/llm" && method === "GET") return [200, llmStatus()];
     if (path === "/api/llm/pull" && method === "POST") {
@@ -592,6 +917,11 @@
     const url = typeof input === "string" ? input : input.url;
     if (!url.startsWith("/api/")) return realFetch ? realFetch(input, init) : Promise.reject(new Error("rete non disponibile"));
     await delay(50 + Math.random() * 90);
+    const stream = url.match(/^\/api\/conversations\/(\d+)\/messages$/);
+    if (stream && (init.method || "GET").toUpperCase() === "POST") {
+      if (!state.loggedIn) return new Response(JSON.stringify({ detail: "Accesso richiesto" }), { status: 401 });
+      return streamMessage(Number(stream[1]), body(init).content, init.signal);
+    }
     const [status, data] = route((init.method || "GET").toUpperCase(), url, init);
     return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
   };
@@ -601,13 +931,12 @@
     open(method, url) { this.method = method; this.url = url; }
     send(form) {
       let loaded = 0;
-      const step = () => {
-        loaded += 12;
-        if (this.upload.onprogress) this.upload.onprogress({ lengthComputable: true, loaded: Math.min(loaded, 100), total: 100 });
-        if (loaded < 100) return setTimeout(step, 90);
-        setTimeout(() => {
-          let status, data;
-          const file = form.get("file");
+      const finish = async () => {
+        let status, data;
+        const file = form.get("file");
+        if (this.url === "/api/documents") {
+          [status, data] = await createDocument(file);
+        } else {
           let params = {};
           try { params = JSON.parse(form.get("params") || "{}"); } catch { /* vuoto */ }
           const task = tasksOut().find((t) => t.id === form.get("task"));
@@ -615,9 +944,15 @@
           else if (!file || !file.name) [status, data] = fail(400, "Seleziona un file");
           else if (!task.accept.includes("." + file.name.split(".").pop().toLowerCase())) [status, data] = fail(400, `Formato non supportato. Accettati: ${task.accept.join(", ")}`);
           else [status, data] = createJob(task.id, params, file.name);
-          this.status = status; this.responseText = JSON.stringify(data);
-          if (this.onload) this.onload();
-        }, 150);
+        }
+        this.status = status; this.responseText = JSON.stringify(data);
+        if (this.onload) this.onload();
+      };
+      const step = () => {
+        loaded += 12;
+        if (this.upload.onprogress) this.upload.onprogress({ lengthComputable: true, loaded: Math.min(loaded, 100), total: 100 });
+        if (loaded < 100) return setTimeout(step, 90);
+        setTimeout(finish, 150);
       };
       step();
     }
@@ -633,6 +968,11 @@
   })();
   const origSetAttribute = Element.prototype.setAttribute;
   Element.prototype.setAttribute = function (name, value) {
+    if (name === "src" && typeof value === "string" && this.tagName === "IMG") {
+      const page = value.match(/^\/api\/documents\/(\d+)\/pages\/(\d+)/);
+      const d = page && docOf(Number(page[1]));
+      if (d) value = pageImage(d, Number(page[2]));
+    }
     if (name === "src" && typeof value === "string" && value.startsWith("/api/jobs/") && (this.tagName === "VIDEO" || this.tagName === "IMG")) {
       if (/\.(mp4|webm)(\?|$)/i.test(value)) {
         origSetAttribute.call(this, "poster", ASSETS.image);
