@@ -65,7 +65,7 @@ def users(client):
 @pytest.fixture
 def login(client, users):
     def _login(name: str) -> dict:
-        login_limiter.reset("testclient")
+        login_limiter.clear()
         r = client.post("/api/login", json={"username": name, "password": users[name]})
         assert r.status_code == 200, r.text
         client.cookies.clear()

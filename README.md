@@ -51,17 +51,71 @@ Alla fine stampa gli indirizzi da aprire nel browser.
 > Consiglio: per le prestazioni massime imposta la modalità di alimentazione più alta
 > (`sudo nvpmodel -m 0` o "MAXN SUPER" dal menu in alto a destra) e usa un SSD NVMe per i dati.
 
-### Accesso da fuori casa / ufficio (Tailscale)
+## Accesso da remoto e sicurezza
 
-Tailscale crea una rete privata tra i tuoi dispositivi senza aprire porte sul router.
+### Come funziona
 
-1. Sui dispositivi da cui vuoi usare il server (PC, telefono) installa l'app **Tailscale**
-   e accedi con lo stesso account usato sul Jetson.
-2. Apri `https://<nome-del-jetson>.<tua-tailnet>.ts.net` (l'indirizzo esatto lo stampa lo script
-   e lo trovi nella console di Tailscale).
+Il server **non è esposto su internet**. Per usarlo da fuori casa si usa **Tailscale**, una VPN
+privata (basata su WireGuard) che collega i tuoi dispositivi come se fossero sulla stessa rete,
+ovunque siano: Wi-Fi di casa, ufficio, 4G.
 
-Per far usare il server ad altre persone, invitale nella tua tailnet (o condividi solo il
-Jetson dalla console Tailscale) e crea loro un utente dalla pagina **Utenti**.
+- Non serve aprire porte sul router né avere un IP pubblico.
+- Il server ascolta **solo sul Jetson stesso** (`127.0.0.1`). `tailscale serve` lo rende
+  disponibile all'indirizzo `https://<nome-jetson>.<tua-rete>.ts.net` **solo ai dispositivi della
+  tua rete Tailscale**, con un certificato HTTPS valido.
+- Chi non è nella tua rete Tailscale non può nemmeno raggiungere il server.
+
+Per usarlo: sul Jetson ci pensa `deploy/install.sh`; su PC e telefono installi l'app **Tailscale**,
+accedi con lo stesso account e apri l'indirizzo che lo script stampa alla fine. Per HTTPS va attivato
+una volta nella console Tailscale (*DNS → HTTPS Certificates*).
+
+### Livelli di protezione
+
+| Livello | Cosa fa |
+|---|---|
+| Rete | Solo i dispositivi autorizzati della tua rete Tailscale arrivano al server; il traffico è cifrato da un capo all'altro |
+| Trasporto | HTTPS con certificato valido |
+| Accesso | Login per ogni utente; password salvate solo come hash PBKDF2-SHA256 con sale; sessioni con token casuale (nel database resta solo l'hash); cookie `HttpOnly`, `SameSite` e `Secure`; blocco dopo 5 tentativi falliti in 5 minuti per quell'utente |
+| Permessi | Ogni utente vede solo i propri documenti, conversazioni e analisi; solo gli amministratori gestiscono utenti, modelli e pipeline |
+| Browser | Intestazioni di sicurezza: politica sui contenuti rigorosa (nessuno script esterno), pagina non incorporabile in altri siti, HSTS |
+| Servizio | Il servizio di sistema non può acquisire nuovi privilegi e ha accesso limitato al sistema |
+
+### Altre persone
+
+Due modi: **invitarle nella tua rete Tailscale** (vedrebbero anche gli altri tuoi dispositivi, a meno
+di limitarli con le regole di accesso) oppure **condividere solo il Jetson** dalla console Tailscale
+(*Share*): useranno il loro account Tailscale e vedranno solo quella macchina. In entrambi i casi
+crea poi per loro un utente dalla pagina **Utenti**.
+
+### Cosa non fare
+
+- Non aprire porte sul router (*port forwarding*).
+- Non usare `tailscale funnel`: pubblica il servizio su internet.
+- Non impostare `JAS_HOST=0.0.0.0` nel file `.env`: apre il server a tutta la rete locale, senza cifratura.
+- Non attivare `JAS_API_DOCS=on` se non serve: la documentazione dell'API sarebbe visibile senza accesso.
+
+### Lista di controllo consigliata
+
+- Attiva l'**autenticazione a due fattori** sull'account usato per Tailscale (e sul provider di accesso).
+- Nella console Tailscale abilita l'**approvazione dei dispositivi** e la scadenza delle chiavi; con le
+  *regole di accesso* (ACL) limita chi può raggiungere il Jetson.
+- Usa **password lunghe** per gli utenti del server (il minimo richiesto è 8 caratteri; meglio una frase).
+- Tieni il sistema aggiornato: `sudo apt install unattended-upgrades`.
+- Per SSH usa solo le chiavi (`PasswordAuthentication no` in `/etc/ssh/sshd_config`) oppure Tailscale SSH.
+- Facoltativo, un firewall: `sudo ufw default deny incoming && sudo ufw allow in on tailscale0`, più una
+  regola per SSH dalla tua rete. Prima di abilitarlo (`sudo ufw enable`) assicurati di avere un modo per rientrare.
+- Carica modelli `.pt` solo da fonti fidate: un file `.pt` può contenere codice che viene eseguito all'apertura.
+- I dati sul disco **non sono cifrati**: se il Jetson può essere rubato, valuta la cifratura del disco.
+- Fai copie di `data/` (documenti, conversazioni, modelli, database).
+
+### Alternative a Tailscale
+
+| Soluzione | Pro | Contro |
+|---|---|---|
+| **Tailscale** (consigliata) | Nessuna porta aperta, funziona dietro qualsiasi rete, configurazione semplice | Ogni dispositivo deve avere l'app; verifica i limiti del piano gratuito |
+| WireGuard o OpenVPN su router/Jetson | Tutto sotto il tuo controllo | Serve una porta aperta sul router e un indirizzo raggiungibile; non funziona dietro CGNAT; più manutenzione |
+| Cloudflare Tunnel con Cloudflare Access | Si usa da qualsiasi browser, senza app | I dati (PDF, video) passano dai loro server; di solito c'è un limite alla dimensione di ogni caricamento (100 MB sui piani gratuiti, da verificare), poco adatto ai video |
+| Port forwarding diretto | — | Sconsigliato: espone il Jetson a tutta internet |
 
 ## Uso
 
@@ -218,7 +272,7 @@ Gli errori da mostrare all'utente si segnalano con `raise TaskError("messaggio")
 
 ## API
 
-Tutto ciò che fa l'interfaccia è disponibile via HTTP (documentazione interattiva su `/docs`):
+Tutto ciò che fa l'interfaccia è disponibile via HTTP (la documentazione interattiva su `/docs` si attiva con `JAS_API_DOCS=on`, ma resta visibile anche senza accesso):
 
 ```bash
 TOKEN=$(curl -s https://jetson.tailnet.ts.net/api/login -H 'content-type: application/json' \

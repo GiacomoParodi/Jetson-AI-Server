@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.datastructures import MutableHeaders
 
 from . import __version__, db
 from .config import settings
@@ -48,7 +49,60 @@ async def lifespan(_: FastAPI):
     worker.stop()
 
 
-app = FastAPI(title="Jetson AI Server", version=__version__, lifespan=lifespan)
+app = FastAPI(
+    title="Jetson AI Server", version=__version__, lifespan=lifespan,
+    docs_url="/docs" if settings.api_docs else None, redoc_url=None,
+    openapi_url="/openapi.json" if settings.api_docs else None,
+)
+
+
+# ---------------------------------------------------------------- intestazioni di sicurezza
+
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+       "img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; "
+       "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+DOCS_PATHS = {"/docs", "/redoc", "/openapi.json"}
+
+
+class SecurityHeaders:
+    """Aggiunge a ogni risposta le intestazioni che chiedono al browser di difendersi: niente
+    pagina incorporata in altri siti, niente script esterni, niente tipi di file indovinati.
+    È un middleware ASGI puro, così non interferisce con le risposte in streaming."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        https = scope.get("scheme") == "https"
+        path = scope.get("path", "")
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                defaults = {
+                    "X-Content-Type-Options": "nosniff",
+                    "X-Frame-Options": "DENY",
+                    "Referrer-Policy": "no-referrer",
+                    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+                    "Cross-Origin-Opener-Policy": "same-origin",
+                }
+                if path not in DOCS_PATHS:
+                    defaults["Content-Security-Policy"] = CSP
+                if https:
+                    defaults["Strict-Transport-Security"] = "max-age=15552000"
+                if path.startswith("/api/"):
+                    defaults["Cache-Control"] = "no-store"
+                for name, value in defaults.items():
+                    if name not in headers:
+                        headers[name] = value
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(SecurityHeaders)
 
 
 # ---------------------------------------------------------------- autenticazione
@@ -85,7 +139,7 @@ class LoginIn(BaseModel):
 
 @app.post("/api/login")
 def login(body: LoginIn, request: Request, response: Response):
-    key = request.client.host if request.client else "?"
+    key = f"{request.client.host if request.client else '?'}|{body.username.strip().lower()}"
     if login_limiter.blocked(key):
         raise HTTPException(429, "Troppi tentativi falliti: riprova tra qualche minuto")
     user = db.get_user_by_name(body.username.strip())
@@ -823,6 +877,11 @@ def health():
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-@app.get("/", include_in_schema=False)
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)  # l'icona è nel <head> della pagina
+
+
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 def index():
     return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})

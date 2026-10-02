@@ -147,21 +147,38 @@ if ! tailscale status >/dev/null 2>&1; then
   echo "Si aprirà un link: aprilo nel browser e accedi al tuo account Tailscale."
   sudo tailscale up
 fi
-# HTTPS con certificato valido sull'indirizzo https://<nome-jetson>.<tailnet>.ts.net
-sudo tailscale serve --bg 8000 || warn "tailscale serve non riuscito: attiva HTTPS nella console Tailscale (DNS → HTTPS Certificates) e rilancia: sudo tailscale serve --bg 8000"
-
-PORT="$(grep -E '^JAS_PORT=' "$DIR/.env" | cut -d= -f2 || echo 8000)"
+PORT="$(grep -E '^JAS_PORT=' "$DIR/.env" | cut -d= -f2 || true)"
+PORT="${PORT:-8000}"
+# HTTPS con certificato valido sull'indirizzo https://<nome-jetson>.<tailnet>.ts.net, raggiungibile
+# SOLO dai dispositivi della tua rete Tailscale (non è "funnel": nulla viene esposto su internet).
+SERVE_OK=0
+if sudo tailscale serve --bg "$PORT"; then
+  SERVE_OK=1
+else
+  warn "tailscale serve non riuscito: attiva HTTPS nella console Tailscale (DNS → HTTPS Certificates) e rilancia: sudo tailscale serve --bg $PORT"
+fi
 TS_NAME="$(tailscale status --json 2>/dev/null | "$PY" -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || true)"
-TS_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+
+if grep -qE '^JAS_HOST=(0\.0\.0\.0|::)' "$DIR/.env"; then
+  warn "Nel file .env JAS_HOST apre il server a tutta la rete locale (senza cifratura). Per chiuderlo: JAS_HOST=127.0.0.1 e poi sudo systemctl restart jetson-ai-server"
+fi
 
 step "Fatto!"
 echo "Il server parte da solo a ogni accensione del Jetson."
 echo
-echo "Dalla stessa rete locale:   http://$(hostname -I | awk '{print $1}'):${PORT:-8000}"
-[[ -n "$TS_NAME" ]] && echo "Da ovunque (Tailscale):     https://$TS_NAME"
-[[ -n "$TS_IP" ]] && echo "Da ovunque (Tailscale, IP): http://$TS_IP:${PORT:-8000}"
+if [[ $SERVE_OK -eq 1 && -n "$TS_NAME" ]]; then
+  echo "Indirizzo (dai dispositivi della tua rete Tailscale):  https://$TS_NAME"
+else
+  echo "Tailscale non è ancora configurato per il server: vedi l'avviso qui sopra."
+fi
+echo "Dal Jetson stesso:  http://localhost:$PORT"
 echo
-echo "Sui dispositivi esterni installa l'app Tailscale e accedi con lo stesso account."
+echo "Per sicurezza il server NON è raggiungibile dalla rete locale né da internet: solo tramite Tailscale."
+echo "Sui dispositivi da cui vuoi usarlo installa l'app Tailscale e accedi con lo stesso account."
+echo
+echo "Consigli: attiva l'autenticazione a due fattori sull'account Tailscale, abilita l'approvazione"
+echo "dei dispositivi nella console (login.tailscale.com) e usa password lunghe per gli utenti."
+echo
 echo "Log del server:  journalctl -u jetson-ai-server -f"
 echo
 echo "I modelli caricati vengono ottimizzati con TensorRT in automatico (qualche minuto ciascuno)."

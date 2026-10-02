@@ -21,17 +21,17 @@ def test_requires_login(client):
 
 
 def test_wrong_password_and_rate_limit(client, users):
-    login_limiter.reset("testclient")
+    login_limiter.clear()
     for _ in range(5):
         r = client.post("/api/login", json={"username": "mario", "password": "sbagliata"})
         assert r.status_code == 401
     r = client.post("/api/login", json={"username": "mario", "password": users["mario"]})
     assert r.status_code == 429
-    login_limiter.reset("testclient")
+    login_limiter.clear()
 
 
 def test_cookie_login_and_logout(client, users):
-    login_limiter.reset("testclient")
+    login_limiter.clear()
     client.cookies.clear()
     r = client.post("/api/login", json={"username": "MARIO", "password": users["mario"]})
     assert r.status_code == 200

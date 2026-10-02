@@ -32,10 +32,14 @@ def _env(name: str, default: str) -> str:
 class Settings:
     def __init__(self) -> None:
         self.data_dir = Path(_env("JAS_DATA_DIR", str(ROOT_DIR / "data"))).resolve()
-        self.host = _env("JAS_HOST", "0.0.0.0")
+        # Di norma il server ascolta solo sul dispositivo stesso (127.0.0.1) e viene reso
+        # raggiungibile da fuori solo tramite Tailscale. 0.0.0.0 lo apre a tutta la rete locale.
+        self.host = _env("JAS_HOST", "127.0.0.1")
         self.port = int(_env("JAS_PORT", "8000"))
         self.max_upload_mb = int(_env("JAS_MAX_UPLOAD_MB", "4096"))
         self.session_hours = int(_env("JAS_SESSION_HOURS", "168"))
+        # Documentazione interattiva dell'API (/docs): spenta di default, è visibile anche senza accesso.
+        self.api_docs = _env("JAS_API_DOCS", "off").lower() in ("on", "1", "true", "yes", "si", "sì")
 
         # LLM locale tramite Ollama
         self.ollama_url = _env("JAS_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")

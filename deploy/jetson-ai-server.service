@@ -14,5 +14,12 @@ RestartSec=5
 # Lascia memoria al sistema se un modello esagera, invece di bloccare il Jetson.
 OOMScoreAdjust=200
 
+# Restrizioni di sicurezza: il servizio non può acquisire nuovi privilegi né toccare kernel e cgroup.
+NoNewPrivileges=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
 [Install]
 WantedBy=multi-user.target

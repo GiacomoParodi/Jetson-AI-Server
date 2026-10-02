@@ -44,7 +44,10 @@ def validate_new_password(password: str) -> str | None:
 
 
 class LoginLimiter:
-    """Blocca un indirizzo dopo troppi login falliti in poco tempo."""
+    """Blocca una coppia indirizzo + nome utente dopo troppi login falliti in poco tempo.
+
+    La chiave comprende il nome utente: dietro un proxy (come Tailscale Serve) molte richieste
+    possono sembrare provenire dallo stesso indirizzo, e così chi sbaglia la password non blocca gli altri."""
 
     def __init__(self, max_failures: int = 5, window_s: float = 300) -> None:
         self.max_failures = max_failures
@@ -70,6 +73,10 @@ class LoginLimiter:
     def reset(self, key: str) -> None:
         with self._lock:
             self._failures.pop(key, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._failures.clear()
 
 
 login_limiter = LoginLimiter()
