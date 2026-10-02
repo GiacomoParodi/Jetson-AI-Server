@@ -63,7 +63,9 @@ case "$FSTYPE" in
 esac
 
 step "Pacchetti di sistema"
-sudo apt-get update
+# Alcuni repository di terze parti già presenti sul sistema (RealSense, ROS, ...) possono dare errore:
+# non è un problema nostro, si prosegue con gli indici già scaricati.
+sudo apt-get update || warn "apt-get update ha dato errori su repository di terze parti (es. RealSense/ROS): ignorati, si prosegue."
 sudo apt-get install -y python3-venv python3-pip python3-dev curl ffmpeg \
   tesseract-ocr tesseract-ocr-ita tesseract-ocr-eng libopenblas-dev libgl1 libglib2.0-0
 if [[ $IS_JETSON -eq 1 ]]; then
@@ -71,7 +73,7 @@ if [[ $IS_JETSON -eq 1 ]]; then
   if ! dpkg -s libcusparselt0 >/dev/null 2>&1; then
     tmp="$(mktemp -d)"
     if curl -fsSL -o "$tmp/cuda-keyring.deb" https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb \
-       && sudo dpkg -i "$tmp/cuda-keyring.deb" && sudo apt-get update \
+       && sudo dpkg -i "$tmp/cuda-keyring.deb" && { sudo apt-get update || true; } \
        && sudo apt-get install -y libcusparselt0 libcusparselt-dev; then
       :
     else
