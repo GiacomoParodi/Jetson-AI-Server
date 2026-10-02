@@ -62,7 +62,7 @@ pacchetti di `apt` (circa 1-2 GB) e, se non fai quanto sotto, i modelli degli LL
 2. Fai il clone **dentro** quell'unità e lancia l'installazione da lì, indicando dove tenere i modelli LLM:
    ```bash
    cd /mnt/dati
-   git clone https://github.com/giacomoparodi/prova.git jetson-ai-server
+   git clone https://github.com/GiacomoParodi/Jetson-AI-Server.git jetson-ai-server
    cd jetson-ai-server
    OLLAMA_MODELS_DIR=/mnt/dati/ollama bash deploy/install.sh
    ```
@@ -83,7 +83,7 @@ Dal terminale del Jetson (o da SSH), con il tuo utente normale (**non** `sudo`):
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git
-git clone https://github.com/giacomoparodi/prova.git jetson-ai-server
+git clone https://github.com/GiacomoParodi/Jetson-AI-Server.git jetson-ai-server
 cd jetson-ai-server
 bash deploy/install.sh
 ```
