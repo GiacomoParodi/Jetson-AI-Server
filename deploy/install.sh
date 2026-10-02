@@ -57,6 +57,11 @@ if [[ -n "$free_gb" && "$free_gb" -lt 15 ]]; then
   warn "Spazio libero ${free_gb} GB: ne servono almeno 15 (PyTorch, modelli, LLM). Meglio avere un SSD NVMe."
 fi
 
+FSTYPE="$(findmnt -no FSTYPE -T "$DIR" 2>/dev/null || true)"
+case "$FSTYPE" in
+  vfat|exfat|ntfs|fuseblk) die "la cartella è su un'unità $FSTYPE: non supporta i permessi di Linux. Formatta l'unità in ext4 (vedi README) e rifai il clone lì." ;;
+esac
+
 step "Pacchetti di sistema"
 sudo apt-get update
 sudo apt-get install -y python3-venv python3-pip python3-dev curl ffmpeg \
@@ -135,6 +140,14 @@ if command -v ollama >/dev/null 2>&1; then
 Environment="OLLAMA_MAX_LOADED_MODELS=1"
 Environment="OLLAMA_NUM_PARALLEL=1"
 EOF
+  # Modelli LLM su un'altra unità (es. la SD/SSD esterna):
+  #   OLLAMA_MODELS_DIR=/mnt/dati/ollama bash deploy/install.sh
+  if [[ -n "${OLLAMA_MODELS_DIR:-}" ]]; then
+    sudo mkdir -p "$OLLAMA_MODELS_DIR"
+    sudo chown -R ollama:ollama "$OLLAMA_MODELS_DIR" 2>/dev/null || true
+    printf 'Environment="OLLAMA_MODELS=%s"\n' "$OLLAMA_MODELS_DIR" | sudo tee -a /etc/systemd/system/ollama.service.d/jetson.conf >/dev/null
+    echo "Modelli LLM salvati in: $OLLAMA_MODELS_DIR"
+  fi
   sudo systemctl daemon-reload
   sudo systemctl enable ollama || true
   sudo systemctl restart ollama || true

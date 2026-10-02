@@ -42,6 +42,32 @@ Dopo modifiche a `app/static/` si rigenera con `python demo/build.py`.
 
 Un account Tailscale non basta da solo: servono anche i punti sopra, soprattutto JetPack 6 e internet.
 
+### Installare su una SD/SSD esterna (sistema su un'altra SD)
+
+Il sistema può restare sulla sua SD e il progetto stare su quella collegata. Il progetto ci mette
+l'ambiente Python (PyTorch), i dati, i documenti e i modelli YOLO; restano sulla SD di sistema solo i
+pacchetti di `apt` (circa 1-2 GB) e, se non fai quanto sotto, i modelli degli LLM.
+
+1. L'unità deve essere formattata **ext4** (exFAT/FAT/NTFS non vanno: niente permessi Linux).
+   Attenzione: formattare **cancella tutto** su quell'unità. Individua il nome con `lsblk -f`
+   (es. `/dev/mmcblk1p1` o `/dev/sda1`) e controllalo bene prima di formattare:
+   ```bash
+   lsblk -f
+   sudo mkfs.ext4 -L DATI /dev/NOMEPARTIZIONE      # sostituisci col nome corretto
+   sudo mkdir -p /mnt/dati
+   echo 'LABEL=DATI /mnt/dati ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
+   sudo mount -a && sudo chown $USER:$USER /mnt/dati
+   ```
+   Così si monta da sola a ogni accensione.
+2. Fai il clone **dentro** quell'unità e lancia l'installazione da lì, indicando dove tenere i modelli LLM:
+   ```bash
+   cd /mnt/dati
+   git clone https://github.com/giacomoparodi/prova.git jetson-ai-server
+   cd jetson-ai-server
+   OLLAMA_MODELS_DIR=/mnt/dati/ollama bash deploy/install.sh
+   ```
+3. Le schede SD sono lente e si consumano con molte scritture: usa una scheda veloce (A2/U3) o, meglio, un SSD.
+
 ### Passo 1 – Prepara l'account Tailscale (una volta, dal PC)
 
 1. Crea l'account su [login.tailscale.com](https://login.tailscale.com).

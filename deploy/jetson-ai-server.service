@@ -7,6 +7,8 @@ Wants=network-online.target ollama.service
 Type=simple
 User=__USER__
 WorkingDirectory=__DIR__
+# Se il progetto è su un'unità esterna, aspetta che sia montata.
+RequiresMountsFor=__DIR__
 EnvironmentFile=-__DIR__/.env
 ExecStart=__DIR__/.venv/bin/python -m app
 Restart=always
