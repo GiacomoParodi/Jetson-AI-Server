@@ -15,6 +15,16 @@ su file caricati da remoto, tutto in locale (nessun dato lascia il dispositivo).
 - **Avvio automatico** all'accensione e **accesso da qualsiasi rete** tramite Tailscale.
 - **Plugin**: per aggiungere un nuovo compito basta un file Python.
 
+## Demo senza Jetson
+
+`demo/demo.html` è l'interfaccia vera con un finto server dentro il browser e dati di esempio
+(pipeline, modelli, lavori, risultati di una vera esecuzione). Si apre con un doppio clic, anche
+senza connessione, e niente viene salvato né inviato. Si può cliccare dappertutto: creare e
+modificare pipeline, caricare un file per avviare un lavoro, scaricare modelli, uscire ed entrare
+come utente senza permessi di amministratore (nome utente `mario`).
+
+Dopo modifiche a `app/static/` si rigenera con `python demo/build.py`.
+
 ## Installazione sul Jetson
 
 Requisiti: Jetson Orin Nano con **JetPack 6** (Ubuntu 22.04), connessione a internet per l'installazione.

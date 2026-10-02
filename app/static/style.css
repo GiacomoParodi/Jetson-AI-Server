@@ -8,6 +8,7 @@
   --accent: #4c8a00;
   --accent-strong: #3b6d00;
   --accent-soft: #e8f3da;
+  --on-accent: #ffffff;
   --danger: #b42318;
   --danger-soft: #fdecea;
   --warn: #8a5a00;
@@ -20,7 +21,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #121512;
     --surface: #1a1e1a;
     --surface-2: #232823;
@@ -30,6 +31,7 @@
     --accent: #8bc93a;
     --accent-strong: #a2d95c;
     --accent-soft: #24331a;
+    --on-accent: #10160b;
     --danger: #f97066;
     --danger-soft: #3a1d1b;
     --warn: #f5b84a;
@@ -39,6 +41,27 @@
     --shadow: none;
     color-scheme: dark;
   }
+}
+
+:root[data-theme="dark"] {
+  --bg: #121512;
+  --surface: #1a1e1a;
+  --surface-2: #232823;
+  --text: #e7ebe5;
+  --muted: #9aa597;
+  --border: #2f362e;
+  --accent: #8bc93a;
+  --accent-strong: #a2d95c;
+  --accent-soft: #24331a;
+  --on-accent: #10160b;
+  --danger: #f97066;
+  --danger-soft: #3a1d1b;
+  --warn: #f5b84a;
+  --warn-soft: #362a14;
+  --info: #78b0ef;
+  --info-soft: #1a2a3d;
+  --shadow: none;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -59,7 +82,7 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 
 /* ---------- layout */
 .topbar {
-  position: sticky; top: 0; z-index: 10;
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 10;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
@@ -104,8 +127,7 @@ button, .btn {
   text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
 }
 button:hover, .btn:hover { background: var(--surface-2); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-@media (prefers-color-scheme: dark) { button.primary { color: #10160b; } }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 button.primary:hover { background: var(--accent-strong); }
 button.danger { color: var(--danger); }
 button.link { border: none; background: none; padding: 4px; color: var(--accent); }
