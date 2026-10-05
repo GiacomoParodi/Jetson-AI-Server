@@ -24,4 +24,6 @@ fi
 
 echo "==> Riavvio il server"
 sudo systemctl restart jetson-ai-server
+PORT="$(grep -E '^JAS_PORT=' "$DIR/.env" 2>/dev/null | cut -d= -f2)"
+for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:${PORT:-8000}/api/health" >/dev/null 2>&1 && break; sleep 1; done
 bash "$DIR/deploy/check.sh"
