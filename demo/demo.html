@@ -733,6 +733,8 @@ window.DEMO_COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus",
       ram_total_gb: 7.6, disk_free_gb: 187.4, disk_total_gb: 233.9,
       gpu_percent: Math.round(running ? 74 + wave(5, 12) + Math.random() * 5 : 2 + Math.random() * 3),
       temperatures: { "cpu-thermal": Math.round((running ? 61 : 47) + wave(40, 2)), "gpu-thermal": Math.round((running ? 63 : 46) + wave(36, 2)) },
+      power_w: running ? 11.8 + wave(7, 1.5) : 6.1 + wave(9, 0.4), fan_percent: running ? 55 : 0,
+      power_rails: { VDD_IN: running ? 11.8 : 6.1, VDD_CPU_GPU_CV: running ? 6.4 : 1.9, VDD_SOC: 2.1 },
       version: "0.1.0", queued: jobs.filter((j) => j.status === "queued").length, running,
       busy_with: running ? "un'analisi video" : null, waiting: 0,
       ollama: { running: true, models: state.llm.installed.map((m) => m.name), llm_model: state.llm.llm_model, embed_model: state.llm.embed_model },
@@ -3045,11 +3047,17 @@ async function refreshStatus() {
     ];
     if (s.gpu_percent != null) parts.push(["GPU", `${Math.round(s.gpu_percent)}%`]);
     if (temps.length) parts.push(["Temp", `${Math.max(...temps).toFixed(0)} °C`]);
+    if (s.power_w != null) parts.push(["Consumo", `${s.power_w.toFixed(1)} W`]);
+    if (s.fan_percent != null) parts.push(["Ventola", `${s.fan_percent}%`]);
     parts.push(["Disco libero", `${s.disk_free_gb} GB`]);
     if (s.busy_with) parts.push(["In corso", s.busy_with]);
     if (s.queued) parts.push(["In coda", String(s.queued)]);
     if (!s.ollama.running) parts.push(["Modelli linguistici", "Ollama spento"]);
-    setKids($status, ...parts.map(([k, v]) => h("span", {}, `${k} `, h("b", {}, v))));
+    const detail = [
+      ...Object.entries(s.temperatures || {}).map(([k, v]) => `${k}: ${v} °C`),
+      ...Object.entries(s.power_rails || {}).map(([k, v]) => `${k}: ${v} W`),
+    ].join("\n");
+    setKids($status, ...parts.map(([k, v]) => h("span", { title: detail || null }, `${k} `, h("b", {}, v))));
   } catch { /* ignora */ }
 }
 

@@ -164,3 +164,24 @@ def test_system_status(client, login):
     s = client.get("/api/system", headers=login("mario")).json()
     assert s["ram_total_gb"] > 0
     assert s["ollama"]["running"] is False
+
+
+def test_potenza_e_ventola_dai_sensori(tmp_path, monkeypatch):
+    from app.services import system
+
+    hw = tmp_path / "hwmon3"
+    hw.mkdir()
+    (hw / "name").write_text("ina3221\n")
+    for n, label, mv, ma in [(1, "VDD_IN", 5000, 1200), (2, "VDD_CPU_GPU_CV", 4900, 400)]:
+        (hw / f"in{n}_label").write_text(label + "\n")
+        (hw / f"in{n}_input").write_text(f"{mv}\n")
+        (hw / f"curr{n}_input").write_text(f"{ma}\n")
+    fan = tmp_path / "hwmon4"
+    fan.mkdir()
+    (fan / "name").write_text("pwmfan\n")
+    (fan / "pwm1").write_text("128\n")
+    monkeypatch.setattr(system, "_HWMON_ROOT", tmp_path)
+    st = system.status()
+    assert st["power_w"] == 6.0
+    assert st["power_rails"]["VDD_CPU_GPU_CV"] == 1.96
+    assert st["fan_percent"] == 50

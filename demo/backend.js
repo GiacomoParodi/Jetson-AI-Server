@@ -317,6 +317,8 @@
       ram_total_gb: 7.6, disk_free_gb: 187.4, disk_total_gb: 233.9,
       gpu_percent: Math.round(running ? 74 + wave(5, 12) + Math.random() * 5 : 2 + Math.random() * 3),
       temperatures: { "cpu-thermal": Math.round((running ? 61 : 47) + wave(40, 2)), "gpu-thermal": Math.round((running ? 63 : 46) + wave(36, 2)) },
+      power_w: running ? 11.8 + wave(7, 1.5) : 6.1 + wave(9, 0.4), fan_percent: running ? 55 : 0,
+      power_rails: { VDD_IN: running ? 11.8 : 6.1, VDD_CPU_GPU_CV: running ? 6.4 : 1.9, VDD_SOC: 2.1 },
       version: "0.1.0", queued: jobs.filter((j) => j.status === "queued").length, running,
       busy_with: running ? "un'analisi video" : null, waiting: 0,
       ollama: { running: true, models: state.llm.installed.map((m) => m.name), llm_model: state.llm.llm_model, embed_model: state.llm.embed_model },

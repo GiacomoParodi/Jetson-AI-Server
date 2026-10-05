@@ -82,11 +82,17 @@ async function refreshStatus() {
     ];
     if (s.gpu_percent != null) parts.push(["GPU", `${Math.round(s.gpu_percent)}%`]);
     if (temps.length) parts.push(["Temp", `${Math.max(...temps).toFixed(0)} °C`]);
+    if (s.power_w != null) parts.push(["Consumo", `${s.power_w.toFixed(1)} W`]);
+    if (s.fan_percent != null) parts.push(["Ventola", `${s.fan_percent}%`]);
     parts.push(["Disco libero", `${s.disk_free_gb} GB`]);
     if (s.busy_with) parts.push(["In corso", s.busy_with]);
     if (s.queued) parts.push(["In coda", String(s.queued)]);
     if (!s.ollama.running) parts.push(["Modelli linguistici", "Ollama spento"]);
-    setKids($status, ...parts.map(([k, v]) => h("span", {}, `${k} `, h("b", {}, v))));
+    const detail = [
+      ...Object.entries(s.temperatures || {}).map(([k, v]) => `${k}: ${v} °C`),
+      ...Object.entries(s.power_rails || {}).map(([k, v]) => `${k}: ${v} W`),
+    ].join("\n");
+    setKids($status, ...parts.map(([k, v]) => h("span", { title: detail || null }, `${k} `, h("b", {}, v))));
   } catch { /* ignora */ }
 }
 
